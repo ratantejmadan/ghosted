@@ -78,14 +78,17 @@ Loads that session, then talks to Instagram's private API to:
 
 ## The files
 
-| File               | Purpose                                                                                      |
-| ------------------ | -------------------------------------------------------------------------------------------- |
-| `login_browser.py` | One-time browser login; captures and saves your session.                                     |
-| `purge_dms.py`     | The main tool: list, export, dry-run, and unsend.                                            |
-| `unsend_one.py`    | Test harness — unsends a single message by ID, to confirm everything works before a big run. |
-| `requirements.txt` | Python dependencies.                                                                         |
-| `session.json`     | Your saved session (created by login; git-ignored, sensitive).                               |
-| `export/`          | Timestamped JSON backups written before each run (git-ignored).                              |
+| File                  | Purpose                                                                                      |
+| --------------------- | -------------------------------------------------------------------------------------------- |
+| `login_browser.py`    | One-time browser login; captures and saves your session.                                     |
+| `purge_dms.py`        | The main tool: list, export, dry-run, and unsend.                                            |
+| `unsend_one.py`       | Test harness — unsends a single message by ID, to confirm everything works before a big run. |
+| `requirements.txt`    | Python dependencies.                                                                         |
+| `session.json`        | Your saved session (created by login; git-ignored, sensitive).                               |
+| `purged_threads.json` | Ledger of threads already cleared (created on first purge; git-ignored).                     |
+| `PROGRESS.txt`        | Human-readable progress tracker (e.g. `10/50 threads purged`).                               |
+| `progress.json`       | Backing state for the tracker (the total count). Git-ignored.                                |
+| `export/`             | Timestamped JSON backups written before each run (git-ignored).                              |
 
 ---
 
@@ -147,6 +150,9 @@ python3 purge_dms.py --only-user someusername --unsend
 # find the group's exact ID (most recent 10 threads)
 python3 purge_dms.py --list-threads --limit 10
 
+# or list your oldest threads first
+python3 purge_dms.py --list-threads --limit 10 --order oldest
+
 # preview, then unsend, that one thread
 python3 purge_dms.py --thread-id <GROUP_ID> --dry-run
 python3 purge_dms.py --thread-id <GROUP_ID> --unsend
@@ -164,6 +170,21 @@ python3 purge_dms.py --unsend \
   --batch-size 100 --pause-between-batches 1800
 ```
 
+### Or purge just your most recent threads
+
+Useful for clearing things incrementally instead of the whole inbox at once:
+
+```bash
+# preview your 5 most recently active threads
+python3 purge_dms.py --limit 5 --dry-run
+
+# unsend across just those 5 threads
+python3 purge_dms.py --limit 5 --unsend
+
+# or start from your 5 OLDEST threads instead
+python3 purge_dms.py --limit 5 --order oldest --unsend
+```
+
 On a Mac, prefix with `caffeinate -i` to stop the machine sleeping during a
 long run:
 
@@ -175,19 +196,22 @@ caffeinate -i python3 purge_dms.py --unsend --batch-size 100 --pause-between-bat
 
 ## All options
 
-| Flag                              | What it does                                                                   |
-| --------------------------------- | ------------------------------------------------------------------------------ |
-| `--list-threads`                  | Print all threads (IDs, group titles, participants) and exit. Deletes nothing. |
-| `--limit N`                       | With `--list-threads`, only fetch the N most recent threads. `0` = all.        |
-| `--only-user USERNAME`            | Limit to the thread with this user (matches groups they're in).                |
-| `--thread-id ID`                  | Limit to one exact thread — the precise way to target a group.                 |
-| `--export-only`                   | Back up history only; delete nothing.                                          |
-| `--dry-run`                       | Show what _would_ be deleted.                                                  |
-| `--unsend`                        | Actually unsend messages.                                                      |
-| `--include-others-messages`       | Also remove others' messages from _your_ view (does not delete their copy).    |
-| `--min-delay` / `--max-delay`     | Random pause range (seconds) between deletes. Default 2–6.                     |
-| `--batch-size N`                  | Delete in chunks of N, with a long pause between chunks. `0` = continuous.     |
-| `--pause-between-batches SECONDS` | Length of that pause (default 900 = 15 min), with jitter.                      |
+| Flag                              | What it does                                                                                                                                                 |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--list-threads`                  | Print all threads (IDs, group titles, participants) and exit. Deletes nothing.                                                                               |
+| `--limit N`                       | Only act on the N most recent threads. Works with `--list-threads`, `--dry-run`, and `--unsend`. Ignored when `--only-user`/`--thread-id` is set. `0` = all. |
+| `--order recent\|oldest`          | Thread order for `--list-threads` and `--limit`. `recent` (default) = newest activity first; `oldest` = oldest first.                                        |
+| `--include-purged`                | Don't skip threads already in the purged ledger. Use to re-clear threads that got new messages since you last purged them.                                   |
+| `--show-purged`                   | Print the purged-threads ledger and exit.                                                                                                                    |
+| `--only-user USERNAME`            | Limit to the thread with this user (matches groups they're in).                                                                                              |
+| `--thread-id ID`                  | Limit to one exact thread — the precise way to target a group.                                                                                               |
+| `--export-only`                   | Back up history only; delete nothing.                                                                                                                        |
+| `--dry-run`                       | Show what _would_ be deleted.                                                                                                                                |
+| `--unsend`                        | Actually unsend messages.                                                                                                                                    |
+| `--include-others-messages`       | Also remove others' messages from _your_ view (does not delete their copy).                                                                                  |
+| `--min-delay` / `--max-delay`     | Random pause range (seconds) between deletes. Default 2–6.                                                                                                   |
+| `--batch-size N`                  | Delete in chunks of N, with a long pause between chunks. `0` = continuous.                                                                                   |
+| `--pause-between-batches SECONDS` | Length of that pause (default 900 = 15 min), with jitter.                                                                                                    |
 
 Only your own messages are ever unsent unless you pass
 `--include-others-messages`.
@@ -216,7 +240,66 @@ a few hours, and widen your delays before continuing.
 
 ---
 
-## Troubleshooting
+## Resuming and the purged-threads ledger
+
+Because unsending leaves the _conversation_ in place (this tool never leaves
+chats — that would notify people), an already-cleared thread still shows up
+in your inbox. To stop `--limit` from re-selecting threads you've already
+done, the tool keeps a ledger.
+
+- After every deletable message in a thread is handled, that thread ID is
+  recorded in `purged_threads.json` (with a timestamp).
+- In whole-inbox mode, `--limit` automatically **skips** threads in the
+  ledger, so `--limit 10` always means "10 threads you haven't cleared yet."
+- This survives interruptions: completed threads are saved as you go, so if a
+  session expires mid-run, the next run picks up where you left off.
+
+So you can purge in arbitrary chunks without overlap:
+
+```bash
+python3 purge_dms.py --limit 10 --order oldest --unsend   # oldest 10
+python3 purge_dms.py --limit 10 --unsend                  # next 10 recent
+python3 purge_dms.py --limit 20 --unsend                  # next 20
+# ...each run automatically skips everything already cleared
+```
+
+Inspect or override the ledger:
+
+```bash
+python3 purge_dms.py --show-purged          # see what's been cleared
+
+# re-clear threads that got NEW messages since you purged them:
+python3 purge_dms.py --limit 10 --include-purged --unsend
+```
+
+`--list-threads` marks already-purged threads with `(purged)` so you can see
+their status at a glance.
+
+### Progress tracker
+
+A plain-text **`PROGRESS.txt`** gives you an at-a-glance overall view:
+
+```
+ghosted — purge progress
+============================
+
+Threads purged:  10/50  (20%)
+[####----------------]
+Remaining:       40
+Total counted:   2026-06-16T05:00:43
+
+Last updated:    2026-06-16T05:12:09
+```
+
+- The **total** (denominator) is recorded whenever you run `--list-threads`
+  without `--limit` — that full listing counts your whole inbox.
+- The **purged** count (numerator) comes straight from the ledger and updates
+  live: every time a thread is fully cleared during an unsend run,
+  `PROGRESS.txt` is rewritten.
+- A thread only counts toward progress once **every** message in it has been
+  handled — partial threads don't count.
+
+If your inbox grows later, just re-run `--list-threads` to recount the total.
 
 **`login_required` even right after capturing a session.**
 Instagram stores the `sessionid` cookie URL-encoded (colons as `%3A`); the
@@ -263,9 +346,6 @@ failures on specific messages while others succeed is not that.
 This started as a personal tool and is shared so others can use it or build
 something better. High-value next steps:
 
-- **Resume support** — record which message IDs are already deleted so a
-  mid-run session expiry doesn't force a full re-scan from the top. (The
-  single most useful addition for large purges.)
 - **Filtering** by date range or keyword.
 - **Disappearing mode** — re-run on a schedule to keep clearing new messages.
 - **Other platforms** — the same login-and-raw-API pattern extends to

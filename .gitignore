@@ -1,0 +1,15 @@
+# --- Sensitive / personal state (NEVER commit these) ---
+session.json            # your Instagram session token — full account access
+purged_threads.json     # local ledger of threads you've cleared
+progress.json           # progress-tracker state (the total count)
+PROGRESS.txt            # your personal progress view
+export/                 # JSON backups of your DM history
+.env                    # any credentials/env vars
+
+# --- Python ---
+venv/
+__pycache__/
+*.pyc
+
+# --- macOS ---
+.DS_Store
