@@ -12,8 +12,8 @@ Usage:
 
 Example (the most recent message from your export):
     python unsend_one.py \\
-        --thread-id 340282366841710301244259907500905230818 \\
-        --message-id 32410912944863311023729726390796288
+        --thread-id 34028XXXXXXXXXXXX \\
+        --message-id 32410XXXXXXXXXXX
 
 It will:
   1. Authenticate with your saved session.
