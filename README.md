@@ -3,7 +3,6 @@
 [![PyPI](https://img.shields.io/pypi/v/getghosted)](https://pypi.org/project/getghosted/)
 [![Python](https://img.shields.io/pypi/pyversions/getghosted)](https://pypi.org/project/getghosted/)
 [![License](https://img.shields.io/pypi/l/getghosted)](LICENSE)
-[![Downloads](https://img.shields.io/pypi/dm/getghosted)](https://pypi.org/project/getghosted/)
 [![GitHub stars](https://img.shields.io/github/stars/ratantejmadan/ghosted)](https://github.com/ratantejmadan/ghosted)
 
 **Bulk-unsend your Instagram DMs. Free and open source.**
