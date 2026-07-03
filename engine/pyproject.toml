@@ -28,9 +28,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/YOUR_USERNAME/ghosted"
-Repository = "https://github.com/YOUR_USERNAME/ghosted"
-Issues = "https://github.com/YOUR_USERNAME/ghosted/issues"
+Homepage = "https://github.com/ratantejmadan/ghosted"
+Repository = "https://github.com/ratantejmadan/ghosted"
+Issues = "https://github.com/ratantejmadan/ghosted/issues"
 
 [project.scripts]
 ghosted = "ghosted.purge_dms:main"
