@@ -1,9 +1,0 @@
-ghosted — purge progress
-============================
-
-Threads purged:  69/657  (11%)
-[##------------------]
-Remaining:       588
-Total counted:   2026-06-16T04:13:37
-
-Last updated:    2026-06-16T06:42:54
