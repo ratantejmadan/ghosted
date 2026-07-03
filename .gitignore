@@ -4,6 +4,7 @@ purged_threads.json     # local ledger of threads you've cleared
 progress.json           # progress-tracker state (the total count)
 PROGRESS.txt            # your personal progress view
 export/                 # JSON backups of your DM history
+cache/                  # per-thread resumable work queues
 .env                    # any credentials/env vars
 
 # --- Python ---
@@ -13,8 +14,8 @@ __pycache__/
 
 # --- macOS ---
 .DS_Store
-ghosted/session.json
-ghosted/progress.json
-ghosted/PROGRESS.txt
-ghosted/purged_threads.json
-ghosted/export/
+
+# --- Build artifacts ---
+dist/
+build/
+*.egg-info/
