@@ -1,10 +1,5 @@
 # ghosted
 
-[![PyPI](https://img.shields.io/pypi/v/getghosted)](https://pypi.org/project/getghosted/)
-[![Python](https://img.shields.io/pypi/pyversions/getghosted)](https://pypi.org/project/getghosted/)
-[![License](https://img.shields.io/pypi/l/getghosted)](LICENSE)
-[![GitHub stars](https://img.shields.io/github/stars/ratantejmadan/ghosted)](https://github.com/ratantejmadan/ghosted)
-
 **Bulk-unsend your Instagram DMs. Free and open source.**
 
 A free alternative to paid "social media cleanup" tools for one specific job:
@@ -101,16 +96,33 @@ Loads that session, then talks to Instagram's private API to:
 
 Requires Python 3.8+.
 
+### Install from PyPI
+
 ```bash
-git clone <your-repo-url>
+pip install ghosted-dm
+playwright install chromium     # one-time browser download
+```
+
+This gives you three commands: `ghosted`, `ghosted-login`, and
+`ghosted-unsend-one`. (The package is named `ghosted-dm` on PyPI; the command
+you run is just `ghosted`.)
+
+### Or run from source
+
+```bash
+git clone https://github.com/YOUR_USERNAME/ghosted
 cd ghosted
 
 python3 -m venv venv
 source venv/bin/activate        # Windows: venv\Scripts\activate
 
 pip install -r requirements.txt
-playwright install chromium     # one-time browser download (a few hundred MB)
+playwright install chromium
 ```
+
+When running from source, invoke the scripts directly, e.g.
+`python3 -m ghosted.purge_dms --dry-run` or the `python3 purge_dms.py` form
+if you're in the package folder.
 
 > On macOS, use `python3` and `pip` (or just `pip` once the venv is active).
 
@@ -217,6 +229,8 @@ caffeinate -i python3 purge_dms.py --unsend --batch-size 100 --pause-between-bat
 | `--min-delay` / `--max-delay`     | Random pause range (seconds) between deletes. Default 2–6.                                                                                                   |
 | `--batch-size N`                  | Delete in chunks of N, with a long pause between chunks. `0` = continuous.                                                                                   |
 | `--pause-between-batches SECONDS` | Length of that pause (default 900 = 15 min), with jitter.                                                                                                    |
+| `--max-deletes N`                 | Stop after N deletes in one run (per-session cap) and save progress. `0` = no cap. Use to spread huge purges across days.                                    |
+| `--rebuild-cache`                 | Ignore cached thread queues and re-fetch history. Only needed if the account got new messages since the cache was built.                                     |
 
 Only your own messages are ever unsent unless you pass
 `--include-others-messages`.
@@ -245,7 +259,37 @@ a few hours, and widen your delays before continuing.
 
 ---
 
-## Resuming and the purged-threads ledger
+## Huge threads and multi-session purges
+
+Some threads run years deep — tens of thousands of messages. For these, the
+tool caches each thread's work queue so a purge can span many sessions and
+pick up exactly where it left off, without re-fetching.
+
+- The first time a thread is purged, its full history is fetched **once** and
+  the list of message IDs to delete is saved to `cache/queue_<thread_id>.json`
+  (and a backup of the thread is written to `export/`).
+- As messages are deleted, the queue is flushed to disk continuously. If the
+  session expires, you hit a rate limit, or you just stop, progress is saved.
+- On the next run, the tool **loads the cache and resumes** — it does not
+  re-fetch the thread. This is what makes decade-deep threads practical.
+
+To deliberately spread a large purge across days, cap each session:
+
+```bash
+# delete up to 2000 messages, then stop and save progress
+python3 purge_dms.py --unsend --thread-id <BIG_THREAD_ID> \
+  --max-deletes 2000 --batch-size 200 --pause-between-batches 1800
+
+# run the same command again tomorrow — it resumes from the cache
+```
+
+Notes:
+
+- This assumes the account is **quiet** (no new messages arriving). Since the
+  cache is a point-in-time snapshot, that's when it's exactly right. If new
+  messages appear later, run once with `--rebuild-cache` to refresh.
+- For accounts with a few giant threads, purge them one at a time with
+  `--thread-id` so an interruption only ever affects the thread in progress.
 
 Because unsending leaves the _conversation_ in place (this tool never leaves
 chats — that would notify people), an already-cleared thread still shows up

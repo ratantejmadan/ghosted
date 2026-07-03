@@ -129,6 +129,98 @@ def set_total_threads(total):
     render_progress()
 
 
+# ---- Per-thread work-queue cache (resumable across sessions) --------------
+# For huge threads (years of history), we fetch the full message list ONCE,
+# persist the queue of message IDs to delete, and consume it across as many
+# sessions as needed. On resume we read the cache and skip the expensive
+# re-fetch entirely. Valid because the account is frozen (no new messages).
+CACHE_DIR = "cache"
+
+
+def queue_path(thread_id):
+    return os.path.join(CACHE_DIR, f"queue_{thread_id}.json")
+
+
+def load_queue(thread_id):
+    p = queue_path(thread_id)
+    if os.path.exists(p):
+        try:
+            with open(p) as f:
+                return json.load(f)
+        except Exception:
+            return None
+    return None
+
+
+def save_queue(q):
+    """Write the queue atomically so an interrupted write can't corrupt it."""
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    p = queue_path(q["thread_id"])
+    tmp = p + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(q, f)
+    os.replace(tmp, p)
+
+
+def build_queue(cl, summary, my_user_id, include_others, export_dir):
+    """Deep-fetch a thread's full history once, write a backup export, and
+    build the pending list of our deletable message IDs."""
+    tid = str(summary.get("thread_id"))
+    users = [u.get("username") for u in summary.get("users", [])]
+    log(f"  Building cache for thread {tid} "
+        f"({summary.get('thread_title') or ', '.join(users)}) — "
+        f"fetching full history...")
+
+    raw_items = fetch_thread_messages_raw(cl, tid)
+    messages = [_parse_message(i) for i in raw_items]
+
+    # Backup this thread's history before we delete anything.
+    Path(export_dir).mkdir(parents=True, exist_ok=True)
+    backup = {
+        "thread_id": tid,
+        "users": users,
+        "thread_title": summary.get("thread_title"),
+        "messages": messages,
+    }
+    with open(Path(export_dir) / f"thread_{tid}.json", "w") as f:
+        json.dump(backup, f, indent=2, default=str)
+
+    pending = [
+        m["id"] for m in messages
+        if m.get("item_type") not in NON_DELETABLE
+        and (m["user_id"] == my_user_id or include_others)
+    ]
+    q = {
+        "thread_id": tid,
+        "users": users,
+        "built_at": datetime.now().isoformat(timespec="seconds"),
+        "complete": True,          # full history was fetched
+        "total": len(pending),
+        "pending": pending,
+        "done": [],
+    }
+    save_queue(q)
+    log(f"  Cached {len(pending)} deletable message(s) for thread {tid}.")
+    return q
+
+
+def get_queue(cl, summary, my_user_id, include_others, export_dir,
+              rebuild=False):
+    """Load a thread's queue from cache, or build it if missing/rebuild."""
+    tid = str(summary.get("thread_id"))
+    if not rebuild:
+        q = load_queue(tid)
+        if q and q.get("complete"):
+            remaining = len(q.get("pending", []))
+            log(f"  Resuming thread {tid} from cache "
+                f"({remaining} of {q.get('total', remaining)} left).")
+            return q
+    return build_queue(cl, summary, my_user_id, include_others, export_dir)
+
+
+NON_DELETABLE = {"action_log", "placeholder", "video_call_event"}
+
+
 def get_client():
     """Load the session captured by login_browser.py and authenticate."""
     if not os.path.exists(SESSION_FILE):
@@ -403,11 +495,6 @@ def unsend_messages(cl, all_threads, dry_run=True, include_others=False,
                     batch_size=0, pause_between_batches=0):
     my_user_id = str(cl.user_id)
 
-    # These item types are system events or already-gone placeholders, not
-    # real user messages. Instagram returns a 1545003 "something went wrong"
-    # error if you try to unsend them, so skip them entirely.
-    NON_DELETABLE = {"action_log", "placeholder", "video_call_event"}
-
     to_delete = []
     skipped_system = 0
     thread_totals = {}  # thread_id -> count of deletable messages we'll attempt
@@ -533,6 +620,139 @@ def unsend_messages(cl, all_threads, dry_run=True, include_others=False,
             f"{PROGRESS_VIEW}.")
 
 
+def resolve_targets(cl, only_user=None, thread_id=None, limit=0,
+                    order="recent", skip_purged=True):
+    """Return the list of raw thread summaries to purge, applying the same
+    targeting/filtering rules as export_threads — but WITHOUT deep-fetching
+    each thread's history (that happens lazily, per thread, in the cache)."""
+    if thread_id or only_user:
+        raw = fetch_inbox_threads_raw(cl, limit=0)
+        if thread_id:
+            raw = [t for t in raw if str(t.get("thread_id")) == str(thread_id)]
+            if not raw:
+                log(f"No thread found with id '{thread_id}'.")
+            return raw
+        wanted = only_user.lstrip("@").lower()
+        raw = [t for t in raw
+               if any((u.get("username") or "").lower() == wanted
+                      for u in t.get("users", []))]
+        if not raw:
+            log(f"No thread found with user '{only_user}'.")
+        return raw
+    return select_threads(cl, limit=limit, order=order, skip_purged=skip_purged)
+
+
+def purge_resumable(cl, summaries, export_dir, include_others=False,
+                    min_delay=2.0, max_delay=6.0, batch_size=0,
+                    pause_between_batches=0, max_deletes=0, rebuild_cache=False):
+    """
+    Cache-backed, resumable purge. Works one thread at a time:
+      - builds (or loads from cache) that thread's queue of message IDs,
+      - deletes them, flushing progress to disk continuously,
+      - honors batching, a per-session delete cap, and mid-thread resume.
+    """
+    my_user_id = str(cl.user_id)
+    purged_ledger = load_purged()
+
+    session_deletes = 0
+    batch_count = 0
+    total_deleted, total_item_errors = 0, 0
+
+    def flush_pause_if_needed():
+        nonlocal batch_count
+        if batch_size and batch_count >= batch_size:
+            jitter = random.uniform(0.8, 1.2)
+            pause = pause_between_batches * jitter
+            log(f"  Batch of {batch_size} done. "
+                f"Pausing {pause/60:.1f} min before next batch...")
+            time.sleep(pause)
+            batch_count = 0
+
+    for summary in summaries:
+        tid = str(summary.get("thread_id"))
+        q = get_queue(cl, summary, my_user_id, include_others, export_dir,
+                      rebuild=rebuild_cache)
+
+        # Thread already fully cleared (cache empty)? Record and move on.
+        if not q["pending"]:
+            mark_purged(tid, purged_ledger)
+            render_progress()
+            continue
+
+        while q["pending"]:
+            if max_deletes and session_deletes >= max_deletes:
+                save_queue(q)
+                log(f"Session cap of {max_deletes} deletes reached. Progress "
+                    f"saved — re-run to continue where you left off.")
+                log(f"Session totals: {total_deleted} deleted, "
+                    f"{total_item_errors} un-deletable.")
+                return
+
+            msg_id = q["pending"][0]
+            try:
+                cl.direct_message_delete(tid, msg_id)
+                q["pending"].pop(0)
+                q["done"].append(msg_id)
+                total_deleted += 1
+                session_deletes += 1
+                batch_count += 1
+                if total_deleted % 10 == 0:
+                    save_queue(q)
+                    log(f"  {tid}: {len(q['pending'])} left "
+                        f"({total_deleted} deleted this session)")
+            except LoginRequired:
+                save_queue(q)
+                log("Session expired. Progress saved. Re-run login_browser.py, "
+                    "then re-run — it resumes from the cache (no re-fetch).")
+                return
+            except ClientError as e:
+                msg = str(e).lower()
+                is_rate_limit = any(s in msg for s in (
+                    "feedback_required", "wait a few minutes", "rate", "429",
+                    "please wait", "try again later",
+                ))
+                if is_rate_limit:
+                    save_queue(q)
+                    log(f"  Rate-limit signal on {msg_id}. Backing off 90s. "
+                        f"({e})")
+                    time.sleep(random.uniform(60, 120))
+                    # retry same message once; if it fails again, stop the run
+                    try:
+                        cl.direct_message_delete(tid, msg_id)
+                        q["pending"].pop(0)
+                        q["done"].append(msg_id)
+                        total_deleted += 1
+                        session_deletes += 1
+                        batch_count += 1
+                    except Exception:
+                        save_queue(q)
+                        log("Still rate-limited. Stopping — progress saved. "
+                            "Wait a few hours and re-run to resume.")
+                        return
+                else:
+                    # un-deletable item (already gone / unsupported type)
+                    q["pending"].pop(0)
+                    q["done"].append(msg_id)
+                    total_item_errors += 1
+                continue
+
+            time.sleep(random.uniform(min_delay, max_delay))
+            flush_pause_if_needed()
+
+        # Thread fully drained.
+        save_queue(q)
+        mark_purged(tid, purged_ledger)
+        render_progress()
+        log(f"Thread {tid} fully purged.")
+
+    log(f"Run complete. {total_deleted} deleted this session, "
+        f"{total_item_errors} un-deletable.")
+    state = load_progress_state()
+    if state.get("total_threads"):
+        log(f"Overall: {len(load_purged())}/{state['total_threads']} "
+            f"threads purged (see {PROGRESS_VIEW}).")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Export and purge Instagram DMs.")
     parser.add_argument("--export-only", action="store_true",
@@ -579,6 +799,15 @@ def main():
     parser.add_argument("--pause-between-batches", type=float, default=900,
                         help="Seconds to pause between batches (default 900 = "
                              "15 min). Only used when --batch-size > 0.")
+    parser.add_argument("--max-deletes", type=int, default=0,
+                        help="Stop after this many deletes in one run (per "
+                             "session cap), saving progress to resume later. "
+                             "0 = no cap. Great for spreading huge purges "
+                             "across days.")
+    parser.add_argument("--rebuild-cache", action="store_true",
+                        help="Ignore cached thread queues and re-fetch history. "
+                             "Only needed if the account got new messages "
+                             "since the cache was built.")
     args = parser.parse_args()
 
     cl = get_client()
@@ -598,30 +827,52 @@ def main():
                      skip_purged=args.include_purged is False and args.limit > 0)
         return
 
-    all_threads, _ = export_threads(
-        cl, EXPORT_DIR,
+    # For dry-run and export-only, use the simple upfront path (shows counts).
+    if not args.unsend:
+        all_threads, _ = export_threads(
+            cl, EXPORT_DIR,
+            only_user=args.only_user,
+            thread_id=args.thread_id,
+            limit=args.limit,
+            order=args.order,
+            skip_purged=not args.include_purged,
+        )
+        if not all_threads:
+            return
+        if args.export_only:
+            return
+        unsend_messages(
+            cl, all_threads,
+            dry_run=True,
+            include_others=args.include_others_messages,
+            min_delay=args.min_delay,
+            max_delay=args.max_delay,
+            batch_size=args.batch_size,
+            pause_between_batches=args.pause_between_batches,
+        )
+        return
+
+    # Real purge: resumable, cache-backed, lazy per-thread fetch.
+    summaries = resolve_targets(
+        cl,
         only_user=args.only_user,
         thread_id=args.thread_id,
         limit=args.limit,
         order=args.order,
         skip_purged=not args.include_purged,
     )
-
-    if not all_threads:
+    if not summaries:
         return
 
-    if args.export_only:
-        return
-
-    unsend_messages(
-        cl,
-        all_threads,
-        dry_run=not args.unsend,
+    purge_resumable(
+        cl, summaries, EXPORT_DIR,
         include_others=args.include_others_messages,
         min_delay=args.min_delay,
         max_delay=args.max_delay,
         batch_size=args.batch_size,
         pause_between_batches=args.pause_between_batches,
+        max_deletes=args.max_deletes,
+        rebuild_cache=args.rebuild_cache,
     )
 
 
