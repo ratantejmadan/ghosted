@@ -1,411 +1,199 @@
 # ghosted
 
-**Bulk-unsend your Instagram DMs. Free and open source.**
+**Bulk-unsend your own Instagram direct messages — free, open-source, and entirely local.**
 
-A free alternative to paid "social media cleanup" tools for one specific job:
-permanently removing your own Instagram direct messages — every message you've
-ever sent, across every thread or just one — with no time limit and no
-subscription.
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 
-It logs in through Instagram's own login page (your password never touches
-this tool), backs up your conversation history to a local file, and then
-unsends your messages with human-paced timing.
+ghosted deletes (unsends) the direct messages _you've_ sent on Instagram — in bulk, with no time limit. It's a free alternative to the paid data-deletion services that charge for this one job. Everything runs on your own machine against your own logged-in session; your data never touches a third-party server.
 
----
+There are two ways to use it:
 
-## Table of contents
+- **CLI** — a Python command-line tool for scripting and power users.
+- **Desktop app** — a Tauri GUI (currently macOS) with a classic Aqua interface, live progress, filtering, and safety controls.
 
-- [What it does](#what-it-does)
-- [How it works](#how-it-works)
-- [The files](#the-files)
-- [Setup](#setup)
-- [Step-by-step usage](#step-by-step-usage)
-- [All options](#all-options)
-- [Avoiding rate limits / action blocks](#avoiding-rate-limits--action-blocks)
-- [Troubleshooting](#troubleshooting)
-- [Important caveats](#important-caveats)
-- [Roadmap / contributing](#roadmap--contributing)
-- [License](#license)
+Both are driven by the same underlying engine, so they behave identically.
 
 ---
 
-## What it does
+## ⚠️ Please read before using
 
-- **Exports** every DM thread and message to a local JSON file _before_ it
-  deletes anything — so you always have a record of what existed.
-- **Unsends** the messages _you_ sent (removes them for everyone in the
-  conversation), with randomized delays and optional batching to behave like
-  a normal user session.
-- **Targets precisely**: run it across your whole inbox, a single person's
-  DM, or one exact thread (e.g. a specific group chat).
-- **Handles every message type** — text, shared posts and reels, profile
-  shares, links, voice notes — by reading the raw conversation data instead
-  of relying on fragile parsing.
+- **This deletes _your own_ messages on _your own_ account.** It cannot delete anyone else's messages (Instagram only lets you unsend your own).
+- **It uses Instagram's private API** (via [instagrapi](https://github.com/subzeroid/instagrapi)), which is **against Instagram's Terms of Service.** There is inherent risk in automating any action on your account. Use it at your own risk — your account is your responsibility.
+- **Deletion is permanent and cannot be undone.** Before anything is removed, ghosted writes a local JSON backup of every affected conversation to an `export/` folder.
+- **Rate limiting is built in** to keep deletions under Instagram's throttling thresholds, but no tool can _guarantee_ your account won't be flagged. Go slow.
+- **Your login stays on your machine.** You log in through Instagram's real login page in a browser; ghosted captures only the resulting session token and stores it locally. Your password is never seen or stored.
 
-Unsend on Instagram has no age limit, so this works on messages from years
-ago, not just recent ones.
+---
+
+## Features
+
+- **Browser-based login** — authenticate through Instagram's own page (including 2FA / checkpoints); only the session is saved, locally.
+- **Two-tier indexing** — a fast, lightweight pass lists all your conversations instantly; a per-conversation **Deep Scan** fetches full message history only when you ask for it.
+- **Resumable deletion** — every thread's work-queue is cached to disk, so a purge can be stopped and resumed across sessions (or survive an expired login) without re-fetching or re-deleting.
+- **Persistent hourly rate cap** — a rolling-window limiter never lets you exceed a hard ceiling of **200 deletions/hour** (default target: **150/hour**), and the cap _persists across restarts_ since Instagram's limit is server-side.
+- **Pacing presets** — Conservative (100/hr), Balanced (150/hr, default), and Fast (180/hr), plus fully custom pacing.
+- **Live progress** — real-time counts, ETA, deletion rate, and per-thread progress, with **Pause / Resume / Stop**.
+- **Sort & filter** — order threads newest/oldest, and filter by your-message count, total-message count, purged status, or scan status.
+- **Safe by default** — a type-to-confirm gate before any deletion, an automatic backup export, and no re-crawling of already-indexed threads unless you explicitly opt in.
 
 ---
 
 ## How it works
 
-The tool is split into two stages so that login is isolated from the
-deletion work.
+Instagram's official API doesn't allow reading or deleting personal DMs, so ghosted uses a captured browser session with the private mobile API (the same approach the paid services use).
 
-**1. Login (`login_browser.py`)**
-Opens Instagram's real login page in a Playwright-controlled browser. You log
-in there yourself — including 2FA, "save login info", and any security
-checkpoints — exactly as you normally would. Once you're at your home feed,
-the script captures your `sessionid` cookie and saves it to `session.json`.
+**The two-tier model** keeps things fast and lets you delete a single chat without waiting for your whole account to be crawled:
 
-Your credentials only ever go to Instagram. This tool never sees your
-password. (Note: Instagram's _official_ API does not allow reading or
-deleting personal DMs, so a captured browser session is the only realistic
-way to do this — there is no OAuth "authorize app" flow for it.)
+1. **Index (lightweight)** — pulls just the conversation list (names, IDs, group/DM). Instant, and persisted to `threads_index.json` so the list is there every time you open the app.
+2. **Deep Scan (on demand)** — for the conversations you select, fetches the full message history, counts how many are yours, and caches a delete-queue to disk.
+3. **Purge** — deletes straight from those cached queues. It never re-crawls an already-scanned thread (unless you tick _Rebuild cache_); a not-yet-scanned thread is fetched once, on the fly.
 
-**2. Purge (`purge_dms.py`)**
-Loads that session, then talks to Instagram's private API to:
-
-- List your threads and pull full message history, reading the **raw JSON**
-  directly. This deliberately avoids the higher-level parsing in the
-  underlying library, which crashes on shared posts/reels whose internal
-  media URLs don't validate. We only keep the five fields we actually need
-  per message: id, sender, timestamp, type, and text.
-- Unsend each of your messages one at a time, with random pauses, skipping
-  system items that can't be deleted.
+**Rate limiting** is a hard rolling-window cap, not just randomized delays: before each deletion, ghosted checks how many deletions happened in the last 60 minutes and waits if it would cross the limit. The log of deletion timestamps is saved to disk, so quitting and reopening the app doesn't reset the window.
 
 ---
 
-## The files
+## Requirements
 
-| File                  | Purpose                                                                                      |
-| --------------------- | -------------------------------------------------------------------------------------------- |
-| `login_browser.py`    | One-time browser login; captures and saves your session.                                     |
-| `purge_dms.py`        | The main tool: list, export, dry-run, and unsend.                                            |
-| `unsend_one.py`       | Test harness — unsends a single message by ID, to confirm everything works before a big run. |
-| `requirements.txt`    | Python dependencies.                                                                         |
-| `session.json`        | Your saved session (created by login; git-ignored, sensitive).                               |
-| `purged_threads.json` | Ledger of threads already cleared (created on first purge; git-ignored).                     |
-| `PROGRESS.txt`        | Human-readable progress tracker (e.g. `10/50 threads purged`).                               |
-| `progress.json`       | Backing state for the tracker (the total count). Git-ignored.                                |
-| `export/`             | Timestamped JSON backups written before each run (git-ignored).                              |
+**Engine / CLI**
+
+- Python **3.10+** (3.12 recommended)
+- [instagrapi](https://github.com/subzeroid/instagrapi) and [Playwright](https://playwright.dev/python/) (installed via the steps below)
+
+**Desktop app** (in addition to the above)
+
+- [Node.js](https://nodejs.org/) 20+ (22 recommended)
+- [Rust](https://www.rust-lang.org/tools/install) (stable toolchain)
+- macOS: Xcode Command Line Tools (`xcode-select --install`)
 
 ---
 
 ## Setup
 
-Requires Python 3.8+.
+### 1. Engine (Python)
 
-### Install from PyPI
-
-```bash
-pip install ghosted-dm
-playwright install chromium     # one-time browser download
-```
-
-This gives you three commands: `ghosted`, `ghosted-login`, and
-`ghosted-unsend-one`. (The package is named `ghosted-dm` on PyPI; the command
-you run is just `ghosted`.)
-
-### Or run from source
+From the repository root:
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/ghosted
-cd ghosted
-
-python3 -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
-
-pip install -r requirements.txt
-playwright install chromium
+cd engine
+python3.12 -m venv ../venv
+source ../venv/bin/activate          # Windows: ..\venv\Scripts\activate
+pip install -e .
+playwright install chromium          # browser used for login
 ```
 
-When running from source, invoke the scripts directly, e.g.
-`python3 -m ghosted.purge_dms --dry-run` or the `python3 purge_dms.py` form
-if you're in the package folder.
+This installs the `ghosted` command and its dependencies into the virtualenv.
 
-> On macOS, use `python3` and `pip` (or just `pip` once the venv is active).
+### 2. Log in (once)
+
+ghosted keeps its runtime files (your session, caches, exports) in whatever directory you run it from. Create a working directory so they don't clutter the source tree — this repo ignores a `rundir/` for exactly this:
+
+```bash
+mkdir -p rundir && cd rundir
+ghosted-login                        # opens a browser; log in to Instagram there
+```
+
+A browser window opens to Instagram's login page. Log in normally (2FA included); ghosted auto-detects success and saves `session.json` locally.
+
+### 3. Desktop app (optional)
+
+> **Heads up:** the desktop app currently has two machine-specific paths hard-coded in `desktop/src-tauri/src/lib.rs`. Before building, open that file and set:
+>
+> - `VENV_PYTHON` → the absolute path to your venv's `python3`
+> - `RUNDIR` → the absolute path to your `rundir/` working directory
+>
+> (Making these configurable is on the roadmap — see below.)
+
+Then:
+
+```bash
+cd desktop
+npm install
+npm run tauri dev
+```
+
+The first build compiles the Rust dependency tree and takes a few minutes; subsequent runs are fast. A native window opens with the ghosted interface.
 
 ---
 
-## Step-by-step usage
+## Usage
 
-The recommended order — test small, then go big.
+### CLI
 
-### 1. Log in
-
-```bash
-python3 login_browser.py
-```
-
-A browser opens to Instagram. Log in, wait for your home feed, then press
-ENTER in the terminal. You should see `Session captured and saved`.
-
-### 2. Confirm a single delete works (optional but recommended)
-
-Find a thread, do an export to get a message ID, then unsend exactly one:
+Run all commands from your `rundir/` working directory (with the venv activated).
 
 ```bash
-python3 unsend_one.py --thread-id <THREAD_ID> --message-id <MESSAGE_ID>
+# List every conversation (IDs, participants, group titles)
+ghosted --list-threads
+
+# Preview what WOULD be deleted, most recent 5 threads — deletes nothing
+ghosted --dry-run --limit 5
+
+# Back up all conversations to export/ without deleting
+ghosted --export-only
+
+# Actually unsend your messages in one specific thread
+ghosted --unsend --thread-id <THREAD_ID>
+
+# Unsend across your most recent 10 threads, gently
+ghosted --unsend --limit 10 --min-delay 18 --max-delay 30
+
+# Spread a huge purge across sessions (cap deletes per run)
+ghosted --unsend --max-deletes 150
 ```
 
-It shows you what it's about to remove and waits for you to type `yes`.
+Useful flags: `--order recent|oldest`, `--only-user <username>`, `--batch-size`, `--pause-between-batches`, `--max-deletes`, `--include-purged`, `--rebuild-cache`, `--show-purged`. Run `ghosted --help` for the full list.
 
-### 3. Test on one conversation
+### Desktop app
 
-```bash
-# preview only — deletes nothing
-python3 purge_dms.py --only-user someusername --dry-run
-
-# do it for real
-python3 purge_dms.py --only-user someusername --unsend
-```
-
-### 4. Target a specific group chat
-
-```bash
-# find the group's exact ID (most recent 10 threads)
-python3 purge_dms.py --list-threads --limit 10
-
-# or list your oldest threads first
-python3 purge_dms.py --list-threads --limit 10 --order oldest
-
-# preview, then unsend, that one thread
-python3 purge_dms.py --thread-id <GROUP_ID> --dry-run
-python3 purge_dms.py --thread-id <GROUP_ID> --unsend
-```
-
-### 5. Purge everything
-
-```bash
-# see the full scope first
-python3 purge_dms.py --dry-run
-
-# run it, batched and slow (recommended for large histories)
-python3 purge_dms.py --unsend \
-  --min-delay 5 --max-delay 12 \
-  --batch-size 100 --pause-between-batches 1800
-```
-
-### Or purge just your most recent threads
-
-Useful for clearing things incrementally instead of the whole inbox at once:
-
-```bash
-# preview your 5 most recently active threads
-python3 purge_dms.py --limit 5 --dry-run
-
-# unsend across just those 5 threads
-python3 purge_dms.py --limit 5 --unsend
-
-# or start from your 5 OLDEST threads instead
-python3 purge_dms.py --limit 5 --order oldest --unsend
-```
-
-On a Mac, prefix with `caffeinate -i` to stop the machine sleeping during a
-long run:
-
-```bash
-caffeinate -i python3 purge_dms.py --unsend --batch-size 100 --pause-between-batches 1800
-```
+1. **Log in** — click _Log in to Instagram_; if you have no valid session, a browser opens for you to authenticate.
+2. **Load your list** — _Re-index now_ fetches your conversation list (fast). It persists, so it's there on every launch.
+3. **Deep Scan** (optional) — select conversations and click _Deep Scan selected_ to see message counts before deleting.
+4. **Purge** — select conversations, click _Purge selected…_, review the scope, type `delete` to confirm, and watch it run. Use **Pause / Resume / Stop** anytime; progress is saved.
+5. **Tune pacing** — the Settings tab has presets and a _Max deletions per hour_ control (hard-capped at 200).
 
 ---
 
-## All options
+## Project structure
 
-| Flag                              | What it does                                                                                                                                                 |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `--list-threads`                  | Print all threads (IDs, group titles, participants) and exit. Deletes nothing.                                                                               |
-| `--limit N`                       | Only act on the N most recent threads. Works with `--list-threads`, `--dry-run`, and `--unsend`. Ignored when `--only-user`/`--thread-id` is set. `0` = all. |
-| `--order recent\|oldest`          | Thread order for `--list-threads` and `--limit`. `recent` (default) = newest activity first; `oldest` = oldest first.                                        |
-| `--include-purged`                | Don't skip threads already in the purged ledger. Use to re-clear threads that got new messages since you last purged them.                                   |
-| `--show-purged`                   | Print the purged-threads ledger and exit.                                                                                                                    |
-| `--only-user USERNAME`            | Limit to the thread with this user (matches groups they're in).                                                                                              |
-| `--thread-id ID`                  | Limit to one exact thread — the precise way to target a group.                                                                                               |
-| `--export-only`                   | Back up history only; delete nothing.                                                                                                                        |
-| `--dry-run`                       | Show what _would_ be deleted.                                                                                                                                |
-| `--unsend`                        | Actually unsend messages.                                                                                                                                    |
-| `--include-others-messages`       | Also remove others' messages from _your_ view (does not delete their copy).                                                                                  |
-| `--min-delay` / `--max-delay`     | Random pause range (seconds) between deletes. Default 2–6.                                                                                                   |
-| `--batch-size N`                  | Delete in chunks of N, with a long pause between chunks. `0` = continuous.                                                                                   |
-| `--pause-between-batches SECONDS` | Length of that pause (default 900 = 15 min), with jitter.                                                                                                    |
-| `--max-deletes N`                 | Stop after N deletes in one run (per-session cap) and save progress. `0` = no cap. Use to spread huge purges across days.                                    |
-| `--rebuild-cache`                 | Ignore cached thread queues and re-fetch history. Only needed if the account got new messages since the cache was built.                                     |
+```
+ghosted/
+├── engine/                     # Python: CLI + shared engine
+│   ├── pyproject.toml
+│   └── ghosted/
+│       ├── purge_dms.py        # CLI entry point + core fetch/cache/delete logic
+│       ├── engine.py           # JSON sidecar the desktop app drives
+│       ├── login_browser.py    # Playwright browser login / session capture
+│       └── unsend_one.py       # single-message helper
+├── desktop/                    # Tauri desktop app
+│   ├── src/index.html          # the UI (Vanilla JS + CSS)
+│   └── src-tauri/
+│       ├── src/lib.rs          # Rust host (spawns the Python sidecar)
+│       └── tauri.conf.json
+├── rundir/                     # runtime files (git-ignored): session, caches, exports
+└── .github/workflows/          # PyPI release workflow
+```
 
-Only your own messages are ever unsent unless you pass
-`--include-others-messages`.
+**Runtime files** (all written to your working directory, none committed): `session.json` (your login), `threads_index.json` (conversation list), `cache/queue_*.json` (per-thread delete queues), `rate_log.json` (hourly-cap timestamps), `purged_threads.json` (ledger), and `export/` (pre-deletion backups).
 
 ---
 
-## Avoiding rate limits / action blocks
+## Roadmap
 
-There is **no setting that makes mass-deletion invisible** — Instagram can
-flag unusual volume regardless of timing. But pacing meaningfully lowers the
-risk of a temporary action block. The levers, in order of impact:
-
-1. **Batching** is the big one. A long, uninterrupted stream of deletes is
-   the clearest bot signature. `--batch-size` + `--pause-between-batches`
-   breaks the work into human-sized sessions. For large histories, prefer a
-   smaller batch with a longer pause, spread across a day.
-2. **Wider, randomized per-message delays** (`--min-delay 5 --max-delay 12`).
-   The randomness matters as much as the length — a fixed interval is itself
-   a tell.
-3. **Run from your home IP**, not a datacenter/VPS IP.
-4. **Keep one stable session** rather than re-capturing fresh ones repeatedly.
-
-The script tells genuine rate limiting apart from harmless per-item errors.
-If the end-of-run summary shows **rate-limit failures climbing**, stop, wait
-a few hours, and widen your delays before continuing.
-
----
-
-## Huge threads and multi-session purges
-
-Some threads run years deep — tens of thousands of messages. For these, the
-tool caches each thread's work queue so a purge can span many sessions and
-pick up exactly where it left off, without re-fetching.
-
-- The first time a thread is purged, its full history is fetched **once** and
-  the list of message IDs to delete is saved to `cache/queue_<thread_id>.json`
-  (and a backup of the thread is written to `export/`).
-- As messages are deleted, the queue is flushed to disk continuously. If the
-  session expires, you hit a rate limit, or you just stop, progress is saved.
-- On the next run, the tool **loads the cache and resumes** — it does not
-  re-fetch the thread. This is what makes decade-deep threads practical.
-
-To deliberately spread a large purge across days, cap each session:
-
-```bash
-# delete up to 2000 messages, then stop and save progress
-python3 purge_dms.py --unsend --thread-id <BIG_THREAD_ID> \
-  --max-deletes 2000 --batch-size 200 --pause-between-batches 1800
-
-# run the same command again tomorrow — it resumes from the cache
-```
-
-Notes:
-
-- This assumes the account is **quiet** (no new messages arriving). Since the
-  cache is a point-in-time snapshot, that's when it's exactly right. If new
-  messages appear later, run once with `--rebuild-cache` to refresh.
-- For accounts with a few giant threads, purge them one at a time with
-  `--thread-id` so an interruption only ever affects the thread in progress.
-
-Because unsending leaves the _conversation_ in place (this tool never leaves
-chats — that would notify people), an already-cleared thread still shows up
-in your inbox. To stop `--limit` from re-selecting threads you've already
-done, the tool keeps a ledger.
-
-- After every deletable message in a thread is handled, that thread ID is
-  recorded in `purged_threads.json` (with a timestamp).
-- In whole-inbox mode, `--limit` automatically **skips** threads in the
-  ledger, so `--limit 10` always means "10 threads you haven't cleared yet."
-- This survives interruptions: completed threads are saved as you go, so if a
-  session expires mid-run, the next run picks up where you left off.
-
-So you can purge in arbitrary chunks without overlap:
-
-```bash
-python3 purge_dms.py --limit 10 --order oldest --unsend   # oldest 10
-python3 purge_dms.py --limit 10 --unsend                  # next 10 recent
-python3 purge_dms.py --limit 20 --unsend                  # next 20
-# ...each run automatically skips everything already cleared
-```
-
-Inspect or override the ledger:
-
-```bash
-python3 purge_dms.py --show-purged          # see what's been cleared
-
-# re-clear threads that got NEW messages since you purged them:
-python3 purge_dms.py --limit 10 --include-purged --unsend
-```
-
-`--list-threads` marks already-purged threads with `(purged)` so you can see
-their status at a glance.
-
-### Progress tracker
-
-A plain-text **`PROGRESS.txt`** gives you an at-a-glance overall view:
-
-```
-ghosted — purge progress
-============================
-
-Threads purged:  10/50  (20%)
-[####----------------]
-Remaining:       40
-Total counted:   2026-06-16T05:00:43
-
-Last updated:    2026-06-16T05:12:09
-```
-
-- The **total** (denominator) is recorded whenever you run `--list-threads`
-  without `--limit` — that full listing counts your whole inbox.
-- The **purged** count (numerator) comes straight from the ledger and updates
-  live: every time a thread is fully cleared during an unsend run,
-  `PROGRESS.txt` is rewritten.
-- A thread only counts toward progress once **every** message in it has been
-  handled — partial threads don't count.
-
-If your inbox grows later, just re-run `--list-threads` to recount the total.
-
-**`login_required` even right after capturing a session.**
-Instagram stores the `sessionid` cookie URL-encoded (colons as `%3A`); the
-private API needs it decoded. The tool decodes it automatically now. If you
-still hit this, re-run `login_browser.py` to capture a fresh session.
-
-**A traceback about `MediaXma` / `video_url` / `url_scheme`.**
-This came from the underlying library choking on a shared post/reel
-attachment. The tool no longer uses that parsing path — it reads raw thread
-data instead — so an up-to-date copy won't hit this.
-
-**`1545003` "something went wrong" on a few messages.**
-These are **not** bot detection. They're system items (chat events, call
-logs) or already-gone placeholders that can't be unsent. The tool skips
-known non-deletable types and reports the rest as "un-deletable" skips. A
-handful of these is normal and harmless.
-
-**How do I know if I'm _actually_ rate limited?**
-Real rate limiting hits consistently across messages with "please wait" /
-"feedback_required" style errors, or forces a checkpoint in the app. Scattered
-failures on specific messages while others succeed is not that.
-
----
-
-## Important caveats
-
-- This uses an **unofficial** client that talks to Instagram's private API.
-  Doing so is against Instagram's Terms of Service. Possible consequences
-  include temporary action blocks, security checkpoints, or account
-  restrictions. Use at your own risk.
-- **Unsend is permanent.** Once a message is removed, Instagram does not let
-  you recover it. The export JSON written before each run is your only record
-  — keep those files safe.
-- You can only **unsend messages you sent** (removed for everyone). For
-  others' messages, `--include-others-messages` does a "remove for me" that
-  only affects your view, not theirs.
-- Large histories can take hours because of the deliberate pacing. That's by
-  design.
-
----
-
-## Roadmap / contributing
-
-This started as a personal tool and is shared so others can use it or build
-something better. High-value next steps:
-
-- **Filtering** by date range or keyword.
-- **Disappearing mode** — re-run on a schedule to keep clearing new messages.
-- **Other platforms** — the same login-and-raw-API pattern extends to
-  Twitter/X, Reddit, Discord, etc.
-
-PRs welcome.
+- **Portable desktop config** — replace the hard-coded `lib.rs` paths with an env var / config file so anyone can build without editing source.
+- **Packaged builds** — signed/notarized installers so non-technical users can download and run (currently: build from source).
+- **Scheduled cleanups** — the Schedule tab is a UI placeholder; the recurring-purge backend isn't wired up yet.
+- **Incremental re-index** — append only new messages instead of a full re-fetch.
+- **Cross-platform** — Windows support alongside macOS.
 
 ---
 
 ## License
 
-GPL v3. You're free to use, modify, and distribute this — but any distributed
-derivative must also be open-sourced under the same license. The work stays
-in the commons.
+[GPL-3.0](LICENSE). Commercial derivatives must remain open-source under the same license.
+
+Published on PyPI as [`getghosted`](https://pypi.org/project/getghosted/). Built by Celestara Dynamics.
+
+---
+
+_This project is not affiliated with, endorsed by, or connected to Instagram or Meta in any way._
