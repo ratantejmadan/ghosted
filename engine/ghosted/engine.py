@@ -101,6 +101,28 @@ def _summary_name(summary, tid):
         u for u in users if u) or tid
 
 
+# --- scheduled cleanups (persisted; fired by the app while it's open) -------
+SCHEDULES_FILE = "schedules.json"
+
+
+def load_schedules():
+    if os.path.exists(SCHEDULES_FILE):
+        try:
+            with open(SCHEDULES_FILE) as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+
+def save_schedules(scheds):
+    try:
+        with open(SCHEDULES_FILE, "w") as f:
+            json.dump(scheds, f, indent=2)
+    except Exception:
+        pass
+
+
 # --- hourly rate cap (hard ceiling, persisted across restarts) -------------
 # Instagram throttles at roughly 200 actions/hour per account. We enforce a
 # rolling-window cap so we NEVER exceed it, and default to a safer 150/hour.
@@ -501,6 +523,15 @@ class Engine:
              purged_threads=len(purged),
              counted_at=state.get("total_counted_at"))
 
+    # -- scheduled cleanups (persisted; the app fires them while open) --
+    def do_schedules_list(self):
+        emit("schedules", schedules=load_schedules())
+
+    def do_schedules_save(self, params):
+        scheds = params.get("schedules", [])
+        save_schedules(scheds)
+        emit("schedules", schedules=scheds)
+
     # -- dispatch --
     def start_worker(self, fn, *a):
         if self.busy():
@@ -531,6 +562,10 @@ class Engine:
             self.control.stop.set(); emit("ack", cmd="stop")
         elif cmd == "progress":
             self.do_summary()
+        elif cmd == "schedules_list":
+            self.do_schedules_list()
+        elif cmd == "schedules_save":
+            self.do_schedules_save(params)
         elif cmd == "shutdown":
             emit("bye"); return False
         else:

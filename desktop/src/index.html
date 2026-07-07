@@ -339,7 +339,7 @@
       <fieldset>
         <legend>New schedule</legend>
         <div class="row"><label class="lbl">What to purge</label>
-          <select id="sc_scope"><option>All active threads</option><option>Selected threads (3)</option></select></div>
+          <select id="sc_scope"><option value="all">All active threads</option><option value="selected">Currently selected threads</option></select></div>
         <div class="row"><label class="lbl">When</label>
           <input type="datetime-local" id="sc_when"></div>
         <div class="row"><label class="lbl">Repeat</label>
@@ -350,11 +350,9 @@
       </fieldset>
       <div class="listwrap" style="max-height:180px">
         <table class="list"><thead><tr><th>Scope</th><th>Next run</th><th>Repeat</th><th>Preset</th><th style="width:60px"></th></tr></thead>
-        <tbody id="schedRows">
-          <tr><td>All active threads</td><td>Sun, 3:00 AM</td><td>Every week</td><td>Conservative</td><td><button class="btn" data-del>Remove</button></td></tr>
-        </tbody></table>
+        <tbody id="schedRows"></tbody></table>
       </div>
-      <p class="hint">Scheduled runs need a valid login when they fire. If your session has expired, the run pauses and asks you to log in.</p>
+      <p class="hint">Schedules run while ghosted is open — if the app is closed when one is due, it runs the next time you open it. A valid login is needed when a schedule fires; if your session has expired, that run is held and marked <b>needs login</b> until you log back in.</p>
     </section>
 
     <!-- SETTINGS -->
@@ -711,6 +709,7 @@
       }));
       renderThreads(); syncSel(); recordTotals();
       setStatus(`Loaded ${threads.length} thread(s) from engine`);
+      checkSchedules();   // fire anything already due, now that we're ready
     } catch (e) {
       setStatus("Engine error — see console (Cmd+Opt+I)");
       console.error("list_threads failed:", e);
@@ -777,11 +776,26 @@
   }
 
   // ---- Real streaming purge (drives the In Progress tab from the engine) ----
+  // Manual purge: current selection + current Settings pacing.
   async function startJob(){
-    const { invoke, Channel } = window.__TAURI__.core;
     const picked = threads.filter(t=>sel.has(t.id));
     if(!picked.length) return;
-    const threadIds = picked.map(t=>t.id);
+    await runPurge(picked.map(t=>t.id), pacingFromSettings());
+  }
+  function pacingFromSettings(){
+    return { min:S.min, max:S.max, batch:S.batch, pause:S.pause,
+             cap:S.cap, perHour:S.perHour, rebuild:S.rebuild };
+  }
+  function pacingFromPreset(name){
+    const p = presets.find(x=>x.name===name) || presets.find(x=>x.name==="Balanced");
+    return { min:p.min, max:p.max, batch:p.batch, pause:p.pause,
+             cap:p.cap, perHour:p.perHour, rebuild:false };
+  }
+
+  // Shared purge runner used by both manual and scheduled purges.
+  async function runPurge(threadIds, pacing){
+    const { invoke, Channel } = window.__TAURI__.core;
+    if(!threadIds.length) return;
 
     $("#idleMsg").style.display="none"; $("#jobBox").style.display="block";
     clearJobBars();
@@ -795,9 +809,9 @@
     try {
       await invoke('purge', {
         threadIds,
-        minDelay: S.min, maxDelay: S.max,
-        batchSize: S.batch, pauseBetweenBatches: S.pause,
-        maxDeletes: S.cap, maxPerHour: S.perHour, rebuild: S.rebuild,
+        minDelay: pacing.min, maxDelay: pacing.max,
+        batchSize: pacing.batch, pauseBetweenBatches: pacing.pause,
+        maxDeletes: pacing.cap, maxPerHour: pacing.perHour, rebuild: pacing.rebuild,
         channel
       });
     } catch (e) {
@@ -921,13 +935,142 @@
     await purgeControl('stop');   // engine emits job_stopped, which finalizes + saves
   });
 
-  $("#sc_add").addEventListener('click',()=>{
-    const tr=document.createElement('tr');
-    const scope=$("#sc_scope").value, when=$("#sc_when").value||"—", rep=$("#sc_rep").value, pre=$("#sc_preset").value;
-    tr.innerHTML=`<td>${scope}</td><td>${when.replace('T',', ')}</td><td>${rep}</td><td>${pre}</td><td><button class="btn" data-del>Remove</button></td>`;
-    $("#schedRows").appendChild(tr);
+  // ================= Scheduled cleanups =================
+  let schedules = [];
+  const REP_LABEL = {once:"Once", daily:"Every day", weekly:"Every week", monthly:"Every month"};
+  const REP_FROM_TEXT = {"Once":"once","Every day":"daily","Every week":"weekly","Every month":"monthly"};
+
+  async function loadSchedules(){
+    const { invoke } = window.__TAURI__.core;
+    try {
+      const res = await invoke('schedules_list');
+      schedules = res.schedules || [];
+      renderSchedules();
+    } catch(e){ console.error("schedules_list failed:", e); }
+  }
+  async function saveSchedules(){
+    const { invoke } = window.__TAURI__.core;
+    try { await invoke('schedules_save', { schedules }); }
+    catch(e){ console.error("schedules_save failed:", e); }
+  }
+  function renderSchedules(){
+    const tb = $("#schedRows"); tb.innerHTML="";
+    if(!schedules.length){
+      tb.innerHTML = `<tr><td colspan="5" class="muted">No schedules yet.</td></tr>`;
+      return;
+    }
+    schedules.forEach(s=>{
+      const scopeLabel = s.scope==="all"
+        ? "All active threads"
+        : `${(s.thread_ids||[]).length} selected thread(s)`;
+      const when = new Date(s.next_run).toLocaleString();
+      const rep = REP_LABEL[s.repeat] || s.repeat;
+      const flag = s.needs_login ? ' <span class="tag">needs login</span>' : '';
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${scopeLabel}${flag}</td><td>${when}</td><td>${rep}</td>`+
+                     `<td>${s.preset}</td>`+
+                     `<td><button class="btn" data-del="${s.id}">Remove</button></td>`;
+      tb.appendChild(tr);
+    });
+  }
+
+  // next occurrence strictly in the future (skips any missed intervals)
+  function computeNextRun(current, repeat){
+    const d = new Date(current); const now = new Date();
+    do {
+      if (repeat==="daily")   d.setDate(d.getDate()+1);
+      else if (repeat==="weekly")  d.setDate(d.getDate()+7);
+      else if (repeat==="monthly") d.setMonth(d.getMonth()+1);
+      else return null;   // "once"
+    } while (d <= now);
+    return d.toISOString();
+  }
+  function advanceSchedule(s){
+    if (s.repeat === "once"){
+      schedules = schedules.filter(x=>x.id!==s.id);
+    } else {
+      s.next_run = computeNextRun(s.next_run, s.repeat);
+      s.last_run = new Date().toISOString();
+    }
+    saveSchedules(); renderSchedules();
+  }
+
+  $("#sc_add").addEventListener('click', async ()=>{
+    const whenVal = $("#sc_when").value;
+    if(!whenVal){ setStatus("Pick a date & time for the schedule"); return; }
+    if(new Date(whenVal) <= new Date()){ setStatus("Pick a time in the future"); return; }
+    const scope = $("#sc_scope").value;            // "all" | "selected"
+    const thread_ids = scope==="selected" ? [...sel] : [];
+    if(scope==="selected" && !thread_ids.length){
+      setStatus("Select threads on the Threads tab first, or choose “All active threads”");
+      return;
+    }
+    schedules.push({
+      id: "sched_" + Date.now(),
+      scope, thread_ids,
+      next_run: new Date(whenVal).toISOString(),
+      repeat: REP_FROM_TEXT[$("#sc_rep").value] || "once",
+      preset: $("#sc_preset").value,
+      needs_login: false,
+    });
+    await saveSchedules(); renderSchedules();
+    setStatus("Schedule added");
   });
-  $("#schedRows").addEventListener('click',e=>{ if(e.target.matches('[data-del]')) e.target.closest('tr').remove(); });
+
+  $("#schedRows").addEventListener('click', async e=>{
+    const btn = e.target.closest('[data-del]');
+    if(!btn) return;
+    const id = btn.getAttribute('data-del');
+    schedules = schedules.filter(s=>s.id!==id);
+    await saveSchedules(); renderSchedules();
+  });
+
+  // Fire a due schedule: verify login, resolve targets, purge, then advance.
+  async function fireSchedule(s){
+    const { invoke } = window.__TAURI__.core;
+    let threadIds;
+    if (s.scope === "all"){
+      threadIds = threads.filter(t=>!t.purged).map(t=>t.id);
+    } else {
+      threadIds = (s.thread_ids||[]).filter(id=>{
+        const t = threads.find(x=>x.id===id); return t && !t.purged;
+      });
+    }
+    if(!threadIds.length){
+      setStatus("Scheduled run skipped — nothing left to purge");
+      advanceSchedule(s);
+      return;
+    }
+    // must be logged in when it fires
+    try {
+      const st = await invoke('check_login');
+      if(!st.logged_in){
+        s.needs_login = true; await saveSchedules(); renderSchedules();
+        setStatus("Scheduled run held — please log in");
+        return;   // do NOT advance; retry once logged in
+      }
+    } catch(e){ console.error("schedule login check failed:", e); return; }
+    s.needs_login = false;
+    setStatus(`Running scheduled purge (${s.preset})…`);
+    await runPurge(threadIds, pacingFromPreset(s.preset));
+    advanceSchedule(s);
+  }
+
+  // Poll for due schedules. Only fires when nothing else is happening and a
+  // thread list is loaded (i.e., we're logged in and ready).
+  function appBusy(){
+    return jobActive
+      || $("#ovIndex").classList.contains('show')
+      || $("#ovLogin").classList.contains('show')
+      || $("#ovConfirm").classList.contains('show');
+  }
+  async function checkSchedules(){
+    if (appBusy() || !threads.length) return;
+    const now = new Date();
+    const due = schedules.find(s => !s.needs_login && new Date(s.next_run) <= now);
+    if (due) await fireSchedule(due);
+  }
+  setInterval(checkSchedules, 30000);   // every 30s
 
   function renderPresets(){
     const bar=$("#presetBar"); bar.innerHTML="";
@@ -979,6 +1122,7 @@
   });
 
   renderThreads(); syncSel(); renderPresets(); fillSettings(); recordTotals();
+  loadSchedules();
 })();
 </script>
 </body>
