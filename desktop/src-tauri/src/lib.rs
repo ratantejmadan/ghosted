@@ -7,6 +7,7 @@ use std::sync::Mutex;
 use serde_json::Value;
 use tauri::ipc::Channel;
 use tauri::Manager;
+use tauri::menu::{AboutMetadataBuilder, MenuBuilder, SubmenuBuilder};
 
 // ⬇️ Filled in with your machine's paths.
 const VENV_PYTHON: &str =
@@ -278,6 +279,63 @@ pub fn run() {
     tauri::Builder::default()
         .manage(EngineState::default())
         .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            let handle = app.handle().clone();
+
+            // The "About ghosted" panel: name, version, license, and links.
+            let about = AboutMetadataBuilder::new()
+                .name(Some("ghosted"))
+                .version(Some(env!("CARGO_PKG_VERSION")))
+                .copyright(Some("\u{00A9} 2026 Celestara Dynamics"))
+                .license(Some("GPL-3.0"))
+                .website(Some("https://github.com/ratantejmadan/ghosted"))
+                .website_label(Some("GitHub"))
+                .comments(Some("Bulk-unsend your Instagram DMs."))
+                // credits renders in the macOS About panel, so put the
+                // license + link here too to guarantee they're visible.
+                .credits(Some(
+                    "Bulk-unsend your Instagram DMs.\n\nLicense: GPL-3.0\n\ngithub.com/ratantejmadan/ghosted",
+                ))
+                .build();
+
+            // First submenu becomes the bold app menu on macOS.
+            let app_menu = SubmenuBuilder::new(&handle, "ghosted")
+                .about(Some(about))
+                .separator()
+                .services()
+                .separator()
+                .hide()
+                .hide_others()
+                .show_all()
+                .separator()
+                .quit()
+                .build()?;
+
+            // Keep a standard Edit menu so copy/paste/undo work in inputs.
+            let edit_menu = SubmenuBuilder::new(&handle, "Edit")
+                .undo()
+                .redo()
+                .separator()
+                .cut()
+                .copy()
+                .paste()
+                .select_all()
+                .build()?;
+
+            let window_menu = SubmenuBuilder::new(&handle, "Window")
+                .minimize()
+                .close_window()
+                .build()?;
+
+            let menu = MenuBuilder::new(&handle)
+                .item(&app_menu)
+                .item(&edit_menu)
+                .item(&window_menu)
+                .build()?;
+
+            app.set_menu(menu)?;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             greet,
             list_threads,
