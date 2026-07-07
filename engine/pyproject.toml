@@ -7,7 +7,7 @@ name = "ghosted-dm"
 version = "0.1.0"
 description = "Bulk-unsend your Instagram DMs. Free and open source."
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 license = { text = "GPL-3.0-or-later" }
 authors = [{ name = "ghosted contributors" }]
 keywords = ["instagram", "dm", "unsend", "privacy", "delete", "messages"]

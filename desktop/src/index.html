@@ -1,0 +1,985 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ghosted</title>
+<style>
+  /* ---------------------------------------------------------------
+     ghosted — Aqua-era utility UI, filling the native Tauri window.
+     (No simulated window chrome: macOS draws the real titlebar.)
+     --------------------------------------------------------------- */
+  :root{
+    --win-bg:#ececec;
+    --pin-a:#ededed; --pin-b:#e4e4e4;
+    --chrome-top:#e9e9e9; --chrome-bot:#c6c6c6;
+    --line:#9a9a9a; --line-soft:#c3c3c3;
+    --text:#000; --dim:#4a4a4a; --faint:#7a7a7a;
+    --sel:#3875d7; --sel-bot:#2b62bd;
+    --aqua-top:#bcdcff; --aqua-hi:#eaf5ff; --aqua-mid:#3f8df6; --aqua-bot:#1f5fd0;
+    --green:#28c840; --red:#ff5f57; --yellow:#febc2e;
+    --font:"Lucida Grande","Helvetica Neue",Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%; margin:0}
+  body{
+    background:var(--win-bg); font-family:var(--font); font-size:12px;
+    color:var(--text); -webkit-font-smoothing:antialiased;
+    overflow:hidden;
+  }
+
+  /* App fills the whole native window */
+  .app{
+    position:relative; height:100vh; width:100vw;
+    display:flex; flex-direction:column; background:var(--win-bg); overflow:hidden;
+  }
+
+  /* ---- Toolbar / tabs (top of window, under the OS titlebar) ----- */
+  .toolbar{
+    flex:0 0 auto; display:flex; gap:4px; padding:8px 10px; align-items:center;
+    background:linear-gradient(#dedede,#cfcfcf); border-bottom:1px solid #a6a6a6;
+  }
+  .tab{
+    appearance:none; border:1px solid #a9a9a9; background:linear-gradient(#fff,#e2e2e2);
+    border-radius:6px; padding:5px 12px; font:inherit; font-size:11px; color:#1c1c1c;
+    display:flex; align-items:center; gap:6px; cursor:pointer;
+    box-shadow:0 1px 0 rgba(255,255,255,.8) inset;
+  }
+  .tab:hover{background:linear-gradient(#fff,#dcdcdc)}
+  .tab[aria-selected="true"]{
+    background:linear-gradient(var(--sel),var(--sel-bot)); color:#fff; border-color:#255bb5;
+    text-shadow:0 -1px 0 rgba(0,0,0,.25); box-shadow:0 1px 2px rgba(0,0,0,.25) inset;
+  }
+  .tab .dot{width:9px; height:9px; border-radius:2px; background:#8aa0bf; display:inline-block}
+  .tab[aria-selected="true"] .dot{background:#dbe8ff}
+  .spacer{flex:1}
+
+  /* ---- Content -------------------------------------------------- */
+  .content{
+    flex:1; overflow:auto; position:relative;
+    background:repeating-linear-gradient(0deg,var(--pin-a) 0 1px,var(--pin-b) 1px 2px);
+  }
+  .pane{display:none; padding:14px}
+  .pane.active{display:block}
+  h2.sec{font-size:13px; margin:2px 0 10px; font-weight:700}
+  .muted{color:var(--faint)}
+  .hint{font-size:11px; color:var(--dim); margin:6px 0 0}
+
+  /* ---- Aqua buttons --------------------------------------------- */
+  .btn{
+    appearance:none; font:inherit; font-size:11px; cursor:pointer; color:#111;
+    border:1px solid #9a9a9a; border-radius:14px; padding:5px 14px;
+    background:linear-gradient(#ffffff,#dfdfdf);
+    box-shadow:0 1px 0 rgba(255,255,255,.9) inset, 0 1px 1px rgba(0,0,0,.08);
+  }
+  .btn:hover{background:linear-gradient(#ffffff,#d6d6d6)}
+  .btn:active{background:linear-gradient(#dcdcdc,#eaeaea)}
+  .btn[disabled]{opacity:.45; cursor:default}
+  .btn.primary{
+    color:#fff; border-color:#215ec0; text-shadow:0 -1px 0 rgba(0,0,0,.3);
+    background:
+      linear-gradient(rgba(255,255,255,.65),rgba(255,255,255,0) 48%),
+      linear-gradient(var(--aqua-mid),var(--aqua-bot));
+    box-shadow:0 1px 0 rgba(255,255,255,.5) inset, 0 1px 2px rgba(0,0,0,.25);
+  }
+  .btn.primary:hover{filter:brightness(1.05)}
+  .btn.danger{color:#fff;border-color:#a11; background:
+      linear-gradient(rgba(255,255,255,.55),rgba(255,255,255,0) 48%),
+      linear-gradient(#e2564e,#b5231b); text-shadow:0 -1px 0 rgba(0,0,0,.3)}
+  .btn.go{color:#fff; border-color:#2b8a3e; text-shadow:0 -1px 0 rgba(0,0,0,.3);
+    background:
+      linear-gradient(rgba(255,255,255,.6),rgba(255,255,255,0) 48%),
+      linear-gradient(#54c56d,#249a42);
+    box-shadow:0 1px 0 rgba(255,255,255,.5) inset, 0 1px 2px rgba(0,0,0,.25)}
+  .btn.go:hover{filter:brightness(1.05)}
+
+  /* ---- Aqua GEL progress bars (the signature) ------------------- */
+  .aqua{position:relative; height:16px; border-radius:9px; border:1px solid #8fa9c9;
+    background:linear-gradient(#d7d7d7,#efefef); overflow:hidden;
+    box-shadow:inset 0 1px 2px rgba(0,0,0,.25)}
+  .aqua > .fill{position:absolute; inset:0 auto 0 0; width:0%;
+    border-radius:9px 0 0 9px;
+    background:
+      linear-gradient(rgba(255,255,255,.85),rgba(255,255,255,0) 55%),
+      linear-gradient(var(--aqua-top),var(--aqua-mid) 55%,var(--aqua-bot));
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.7);
+    transition:width .35s ease}
+  .aqua > .fill::after{content:""; position:absolute; inset:0;
+    background-image:repeating-linear-gradient(-58deg,
+      rgba(255,255,255,.45) 0 8px, rgba(255,255,255,0) 8px 20px);
+    animation:stripe 0.9s linear infinite}
+  .aqua.indet > .fill{width:100% !important; border-radius:9px;
+    background:
+      linear-gradient(rgba(255,255,255,.8),rgba(255,255,255,0) 55%),
+      linear-gradient(90deg,var(--aqua-mid),var(--aqua-top),var(--aqua-mid))}
+  @keyframes stripe{to{background-position:20px 0}}
+  @media (prefers-reduced-motion: reduce){ .aqua > .fill::after{animation:none} }
+
+  /* ---- Tables --------------------------------------------------- */
+  table.list{width:100%; border-collapse:collapse; background:#fff; border:1px solid var(--line-soft)}
+  table.list th,table.list td{padding:5px 9px; font-size:11px; text-align:left; border-bottom:1px solid #ededed}
+  table.list thead th{
+    background:linear-gradient(#f6f6f6,#e4e4e4); border-bottom:1px solid #bdbdbd;
+    font-weight:700; color:#2a2a2a; position:sticky; top:0}
+  table.list td.num,table.list th.num{text-align:right; font-variant-numeric:tabular-nums}
+  table.list tr.sel td{background:linear-gradient(var(--sel),var(--sel-bot)); color:#fff}
+  table.list tr.sel td .tag{border-color:rgba(255,255,255,.5); color:#fff}
+  .tag{display:inline-block; font-size:10px; padding:0 6px; border-radius:8px; border:1px solid #b7b7b7; color:#555; margin-left:6px}
+  .tag.done{border-color:#4a9d5b; color:#2e7d40}
+  .listwrap{border:1px solid var(--line-soft); max-height:360px; overflow:auto}
+
+  /* ---- Filter bar ----------------------------------------------- */
+  .filterbar{display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+    padding:7px 10px; margin-bottom:8px; font-size:11px;
+    background:linear-gradient(#f4f4f4,#ececec); border:1px solid var(--line-soft);
+    border-radius:7px; box-shadow:0 1px 0 rgba(255,255,255,.8) inset}
+  .filterbar .flabel{font-weight:700; color:#2a2a2a}
+  .filterbar .grp{display:flex; align-items:center; gap:4px; color:#333}
+  .filterbar select{font-size:11px; padding:2px 4px}
+  .filterbar input[type="number"]{width:66px}
+  .filterbar .fcount{color:var(--faint)}
+  .filterbar .fsep{width:1px; align-self:stretch; background:var(--line-soft)}
+
+  /* ---- Stat cards ----------------------------------------------- */
+  .cards{display:flex; gap:12px; flex-wrap:wrap; margin-bottom:14px}
+  .card{flex:1; min-width:180px; background:#fff; border:1px solid var(--line-soft);
+    border-radius:7px; padding:12px 14px; box-shadow:0 1px 0 rgba(255,255,255,.8) inset}
+  .card .k{font-size:11px; color:var(--faint)}
+  .card .v{font-size:26px; font-weight:700; margin-top:3px; font-variant-numeric:tabular-nums}
+  .card .v small{font-size:13px; color:var(--faint); font-weight:400}
+
+  /* ---- Forms / settings ----------------------------------------- */
+  fieldset{border:1px solid var(--line-soft); border-radius:7px; margin:0 0 14px; padding:12px 14px; background:#fbfbfb}
+  legend{font-weight:700; font-size:11px; padding:0 6px}
+  .row{display:flex; align-items:center; gap:10px; margin:8px 0}
+  .row label.lbl{width:190px; color:#222}
+  input[type="number"],input[type="text"],input[type="datetime-local"],select{
+    font:inherit; font-size:11px; padding:3px 6px; border:1px solid #9f9f9f;
+    border-radius:4px; background:#fff; box-shadow:inset 0 1px 1px rgba(0,0,0,.12)}
+  input[type="number"]{width:82px}
+  .presetbar{display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px}
+  .preset{border:1px solid #a9a9a9; background:linear-gradient(#fff,#e6e6e6);
+    border-radius:6px; padding:5px 11px; cursor:pointer; font-size:11px; display:flex; gap:6px; align-items:center}
+  .preset[aria-pressed="true"]{background:linear-gradient(var(--sel),var(--sel-bot)); color:#fff; border-color:#255bb5}
+  .preset .warn{color:#b5231b; font-weight:700}
+  .preset[aria-pressed="true"] .warn{color:#ffd8d5}
+  .warnbar{display:none; margin:8px 0 0; padding:8px 10px; border:1px solid #e2c14a;
+    background:#fff7dc; border-radius:6px; font-size:11px; color:#6b5300}
+  .warnbar.show{display:block}
+  .warnbar b{color:#8a1a12}
+
+  /* ---- In-progress ---------------------------------------------- */
+  .job{background:#fff; border:1px solid var(--line-soft); border-radius:7px; padding:14px; margin-bottom:12px}
+  .job .top{display:flex; justify-content:space-between; align-items:baseline; margin-bottom:8px}
+  .job .cur{font-weight:700}
+  .job .eta{font-variant-numeric:tabular-nums; color:var(--dim)}
+  .job .sub{display:flex; justify-content:space-between; margin-top:6px; font-size:11px; color:var(--faint)}
+  .pausepill{display:none; margin-left:8px; font-size:10px; padding:1px 8px; border-radius:8px;
+    background:#ffe1b0; border:1px solid #d99a2e; color:#7a4a00}
+  .pausepill.show{display:inline-block}
+
+  /* ---- Footer status bar ---------------------------------------- */
+  .statusbar{flex:0 0 22px; display:flex; align-items:center; gap:10px; padding:0 10px;
+    font-size:11px; color:#3a3a3a; background:linear-gradient(#dcdcdc,#c8c8c8); border-top:1px solid #a6a6a6}
+  .statusbar .grow{flex:1}
+
+  /* ---- Overlays (cover the whole app) --------------------------- */
+  .overlay{position:absolute; inset:0; display:none; align-items:center; justify-content:center;
+    background:rgba(236,236,236,.72); backdrop-filter:blur(1px); z-index:20}
+  .overlay.show{display:flex}
+  .sheet{width:440px; max-width:90%; background:var(--win-bg); border:1px solid #7a7a7a; border-radius:10px;
+    box-shadow:0 20px 50px rgba(0,0,0,.4); padding:20px}
+  .sheet h3{margin:0 0 6px; font-size:14px}
+  .sheet p{margin:6px 0; font-size:11px; color:var(--dim); line-height:1.5}
+  .sheet .actions{display:flex; justify-content:flex-end; gap:8px; margin-top:16px}
+  .confirmbox{width:100%; margin-top:10px; text-align:center; letter-spacing:.5px; font-weight:700}
+  .scope{background:#fff; border:1px solid var(--line-soft); border-radius:6px; padding:10px 12px; margin-top:8px}
+  .scope b{font-size:13px}
+  .brand{display:flex; align-items:center; gap:10px; margin-bottom:6px}
+  .ghosticon{width:34px;height:34px;border-radius:8px;border:1px solid #6f8fbf;
+    background:linear-gradient(rgba(255,255,255,.7),rgba(255,255,255,0) 55%),linear-gradient(var(--aqua-mid),var(--aqua-bot));
+    display:flex;align-items:center;justify-content:center;color:#fff;font-size:20px}
+  .schedlist td{font-size:11px}
+  .checkall{transform:scale(1.05)}
+</style>
+</head>
+<body>
+<div class="app" role="application" aria-label="ghosted">
+
+  <!-- Toolbar / tabs -->
+  <div class="toolbar" role="tablist">
+    <button class="tab" role="tab" data-tab="threads" aria-selected="true"><span class="dot"></span>Threads</button>
+    <button class="tab" role="tab" data-tab="cleanup"><span class="dot"></span>Cleanup</button>
+    <button class="tab" role="tab" data-tab="progress"><span class="dot"></span>In&nbsp;Progress</button>
+    <button class="tab" role="tab" data-tab="schedule"><span class="dot"></span>Schedule</button>
+    <span class="spacer"></span>
+    <button class="tab" role="tab" data-tab="settings"><span class="dot"></span>Settings</button>
+  </div>
+
+  <!-- Content -->
+  <div class="content">
+
+    <!-- THREADS -->
+    <section class="pane active" data-pane="threads">
+      <h2 class="sec">Your conversations</h2>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+        <label style="display:flex;align-items:center;gap:6px">
+          <input type="checkbox" id="selAll" class="checkall"> Select all
+        </label>
+        <span class="muted" id="selCount">0 selected</span>
+        <button class="btn" id="sortBtn" title="Toggle oldest/newest order">Sort: Newest first</button>
+        <span class="spacer" style="flex:1"></span>
+        <button class="btn" id="reindexBtn">Re-index now</button>
+        <button class="btn" id="scanBtn" disabled>Deep Scan selected</button>
+        <button class="btn primary" id="purgeBtn" disabled>Purge selected…</button>
+      </div>
+      <div class="filterbar">
+        <span class="flabel">Filter</span>
+        <span class="grp">Your msgs
+          <select id="f_mine_op">
+            <option value="any">any</option>
+            <option value="gt">&gt;</option>
+            <option value="gte">&ge;</option>
+            <option value="lt">&lt;</option>
+            <option value="lte">&le;</option>
+            <option value="eq">=</option>
+          </select>
+          <input type="number" id="f_mine_val" min="0" placeholder="—">
+        </span>
+        <span class="grp">Total
+          <select id="f_total_op">
+            <option value="any">any</option>
+            <option value="gt">&gt;</option>
+            <option value="gte">&ge;</option>
+            <option value="lt">&lt;</option>
+            <option value="lte">&le;</option>
+            <option value="eq">=</option>
+          </select>
+          <input type="number" id="f_total_val" min="0" placeholder="—">
+        </span>
+        <span class="fsep"></span>
+        <span class="grp">Status
+          <select id="f_purged">
+            <option value="any">all</option>
+            <option value="no">not purged</option>
+            <option value="yes">purged</option>
+          </select>
+        </span>
+        <span class="grp">Scan
+          <select id="f_scanned">
+            <option value="any">all</option>
+            <option value="yes">scanned</option>
+            <option value="no">not scanned</option>
+          </select>
+        </span>
+        <button class="btn" id="f_clear">Clear</button>
+        <span class="spacer" style="flex:1"></span>
+        <span class="fcount" id="f_count"></span>
+      </div>
+      <div class="listwrap">
+        <table class="list">
+          <thead><tr>
+            <th style="width:26px"></th><th>Conversation</th>
+            <th class="num" style="width:130px">Total messages</th>
+            <th class="num" style="width:130px">Your messages</th>
+            <th style="width:90px">Status</th>
+          </tr></thead>
+          <tbody id="threadRows"></tbody>
+        </table>
+      </div>
+      <p class="hint" id="indexNote">Indexed just now. Auto-reindex runs weekly, or hit “Re-index now.”</p>
+    </section>
+
+    <!-- CLEANUP -->
+    <section class="pane" data-pane="cleanup">
+      <h2 class="sec">Cleanup progress</h2>
+      <div class="cards">
+        <div class="card"><div class="k">Messages deleted</div><div class="v" id="cx_msgs">0</div></div>
+        <div class="card"><div class="k">Threads fully purged</div><div class="v"><span id="cx_done">0</span><small id="cx_total">/0</small></div></div>
+        <div class="card"><div class="k">Your messages remaining</div><div class="v" id="cx_rem">0</div></div>
+      </div>
+      <div class="job">
+        <div class="top"><span class="cur">Overall completion</span><span class="eta" id="cx_pct">0%</span></div>
+        <div class="aqua"><div class="fill" id="cx_bar"></div></div>
+        <div class="sub"><span>A thread counts as purged once none of your messages remain in it.</span></div>
+      </div>
+    </section>
+
+    <!-- IN PROGRESS -->
+    <section class="pane" data-pane="progress">
+      <h2 class="sec">Deletion in progress</h2>
+      <div id="idleMsg" class="hint">No job running. Start one from the Threads tab.</div>
+      <div id="jobBox" style="display:none">
+        <div class="job">
+          <div class="top">
+            <span class="cur" id="jp_cur">—</span>
+            <span class="eta">Est. remaining: <span id="jp_eta">—</span><span class="pausepill" id="jp_pause">paused — backing off</span></span>
+          </div>
+          <div class="aqua"><div class="fill" id="jp_bar"></div></div>
+          <div class="sub"><span id="jp_count">0 / 0 messages</span><span id="jp_rate">—</span></div>
+        </div>
+        <div class="job">
+          <div class="top"><span class="cur">This thread</span><span class="eta" id="jt_name">—</span></div>
+          <div class="aqua"><div class="fill" id="jt_bar"></div></div>
+          <div class="sub"><span id="jt_count">0 / 0 in thread</span><span id="jt_batch">batch —</span></div>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button class="btn" id="pauseBtn">Pause</button>
+          <button class="btn go" id="resumeBtn" disabled>Resume</button>
+        </div>
+        <div style="display:flex;justify-content:flex-end;margin-top:20px;padding-top:12px;border-top:1px solid var(--line-soft)">
+          <button class="btn danger" id="stopBtn">Stop &amp; save progress</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- SCHEDULE -->
+    <section class="pane" data-pane="schedule">
+      <h2 class="sec">Scheduled cleanups</h2>
+      <fieldset>
+        <legend>New schedule</legend>
+        <div class="row"><label class="lbl">What to purge</label>
+          <select id="sc_scope"><option>All active threads</option><option>Selected threads (3)</option></select></div>
+        <div class="row"><label class="lbl">When</label>
+          <input type="datetime-local" id="sc_when"></div>
+        <div class="row"><label class="lbl">Repeat</label>
+          <select id="sc_rep"><option>Once</option><option>Every day</option><option>Every week</option><option>Every month</option></select></div>
+        <div class="row"><label class="lbl">Settings preset</label>
+          <select id="sc_preset"><option>Conservative</option><option>Balanced</option><option>Fast</option></select></div>
+        <div class="row"><button class="btn primary" id="sc_add">Add schedule</button></div>
+      </fieldset>
+      <div class="listwrap" style="max-height:180px">
+        <table class="list"><thead><tr><th>Scope</th><th>Next run</th><th>Repeat</th><th>Preset</th><th style="width:60px"></th></tr></thead>
+        <tbody id="schedRows">
+          <tr><td>All active threads</td><td>Sun, 3:00 AM</td><td>Every week</td><td>Conservative</td><td><button class="btn" data-del>Remove</button></td></tr>
+        </tbody></table>
+      </div>
+      <p class="hint">Scheduled runs need a valid login when they fire. If your session has expired, the run pauses and asks you to log in.</p>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="pane" data-pane="settings">
+      <h2 class="sec">Settings</h2>
+      <div class="presetbar" id="presetBar"></div>
+      <div class="warnbar" id="warnBar">
+        <b>Heads up.</b> <span id="warnText">You’ve set a rate above the recommended 150/hour. Instagram throttles around 200/hour — the closer you get, the higher the risk of an action block. That’s on you.</span>
+      </div>
+      <fieldset>
+        <legend>Pacing</legend>
+        <div class="row"><label class="lbl">Max deletions per hour</label>
+          <input type="number" id="s_perhour" min="1" max="200"> <span class="muted">(hard ceiling: 200 · recommended: 150)</span></div>
+        <div class="row"><label class="lbl">Delay between messages</label>
+          <input type="number" id="s_min" min="0" step="0.5"> to
+          <input type="number" id="s_max" min="0" step="0.5"> seconds</div>
+        <div class="row"><label class="lbl">Batch size</label>
+          <input type="number" id="s_batch" min="0"> messages, then pause</div>
+        <div class="row"><label class="lbl">Pause between batches</label>
+          <input type="number" id="s_pause" min="0"> seconds</div>
+        <div class="row"><label class="lbl">Stop after (per run)</label>
+          <input type="number" id="s_cap" min="0"> messages <span class="muted">(0 = no cap)</span></div>
+      </fieldset>
+      <fieldset>
+        <legend>Scope &amp; cache</legend>
+        <div class="row"><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="s_rebuild"> Rebuild cache (re-fetch history)</label></div>
+      </fieldset>
+      <div style="display:flex;gap:8px">
+        <button class="btn" id="saveDefaults">Save as application defaults</button>
+        <button class="btn" id="savePreset">Save as new preset…</button>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- Status bar -->
+  <div class="statusbar">
+    <span id="sb_acct">Not logged in</span>
+    <span class="grow"></span>
+    <span id="sb_status">Ready</span>
+  </div>
+
+  <!-- Overlays (cover the whole app) -->
+  <div class="overlay show" id="ovLogin">
+    <div class="sheet">
+      <div class="brand"><div class="ghosticon">👻</div><div><h3 style="margin:0">Welcome to ghosted</h3><div class="muted">Bulk-unsend your Instagram DMs.</div></div></div>
+      <p>Log in through Instagram’s own page — your password never touches this app. We keep only the session, on this Mac.</p>
+      <div class="actions"><button class="btn primary" id="loginBtn">Log in to Instagram</button></div>
+    </div>
+  </div>
+
+  <div class="overlay" id="ovIndex">
+    <div class="sheet">
+      <h3 id="ix_title">Indexing your messages…</h3>
+      <p id="ix_sub">Reading your conversations for the first time. This runs once, then refreshes weekly. Large histories can take a while.</p>
+      <div class="aqua indet" style="margin-top:12px"><div class="fill"></div></div>
+      <div class="sub" style="display:flex;justify-content:space-between;margin-top:8px;color:var(--faint);font-size:11px">
+        <span id="ix_thread">—</span><span id="ix_count">0 threads</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="overlay" id="ovConfirm">
+    <div class="sheet">
+      <h3>Confirm deletion</h3>
+      <div class="scope" id="cf_scope"></div>
+      <p>This <b>cannot be undone.</b> A backup of these conversations was saved to <b>export/</b> before anything is removed.</p>
+      <p>Type <b>delete</b> below to begin.</p>
+      <input type="text" class="confirmbox" id="cf_input" placeholder="type: delete" autocomplete="off" spellcheck="false">
+      <div class="actions">
+        <button class="btn" id="cf_cancel">Cancel</button>
+        <button class="btn danger" id="cf_go" disabled>Begin deletion</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function(){
+  "use strict";
+  // Threads are now loaded live from the Python engine (see loadThreads()).
+  let threads = [];
+  // Instagram throttles ~200 actions/hour per account. We NEVER exceed that,
+  // and recommend 150/hour to stay comfortably under detection. Presets are
+  // built around a target deletions-per-hour; the delays give human-like
+  // jitter, and a hard rolling-window cap in the engine is the real ceiling.
+  const HARD_CAP_PER_HOUR = 200;   // absolute limit — never crossed
+  const SAFE_PER_HOUR = 150;       // recommended ceiling
+  const presets = [
+    {name:"Conservative", blessed:true, perHour:100, min:30, max:42, batch:0, pause:0, cap:0},
+    {name:"Balanced",     blessed:true, perHour:150, min:18, max:30, batch:0, pause:0, cap:0},
+    {name:"Fast",         blessed:true, perHour:180, min:16, max:24, batch:0, pause:0, cap:0},
+  ];
+  let activePreset = "Balanced";   // default to the 150/hour recommendation
+  const S = { perHour:150, min:18, max:30, batch:0, pause:0, cap:0,
+              rebuild:false };
+
+  const $ = s=>document.querySelector(s);
+  const fmt = n=>n.toLocaleString("en-US");
+  const sel = new Set();
+  let jobActive = false, jobPaused = false, jobTotal = 0;
+  let sortNewestFirst = true;   // threads arrive newest-first; toggle to reverse
+  const filter = { mineOp:"any", mineVal:"", totalOp:"any", totalVal:"",
+                   purged:"any", scanned:"any" };
+  function setStatus(t){ $("#sb_status").textContent = t; }
+
+  document.querySelectorAll('.tab').forEach(t=>{
+    t.addEventListener('click',()=>{
+      document.querySelectorAll('.tab').forEach(x=>x.setAttribute('aria-selected', x===t));
+      const pane = t.dataset.tab;
+      document.querySelectorAll('.pane').forEach(p=>p.classList.toggle('active', p.dataset.pane===pane));
+    });
+  });
+  function goTab(name){ document.querySelector(`.tab[data-tab="${name}"]`).click(); }
+
+  // --- filtering ---
+  function numMatch(val, op, target){
+    if (op === "any") return true;
+    if (target === "" || target == null || isNaN(target)) return true; // no number entered
+    if (val == null) return false;   // unknown count (unscanned) can't match a numeric filter
+    const t = Number(target);
+    switch(op){
+      case "gt":  return val >  t;
+      case "gte": return val >= t;
+      case "lt":  return val <  t;
+      case "lte": return val <= t;
+      case "eq":  return val === t;
+      default:    return true;
+    }
+  }
+  function matchesFilter(t){
+    if (!numMatch(t.mine,  filter.mineOp,  filter.mineVal))  return false;
+    if (!numMatch(t.total, filter.totalOp, filter.totalVal)) return false;
+    if (filter.purged === "yes" && !t.purged) return false;
+    if (filter.purged === "no"  &&  t.purged) return false;
+    if (filter.scanned === "yes" && !t.scanned) return false;
+    if (filter.scanned === "no"  &&  t.scanned) return false;
+    return true;
+  }
+  function filteredThreads(){ return threads.filter(matchesFilter); }
+
+  // `threads` stays in native newest-first order; this returns the filtered
+  // set in the chosen display order without mutating the source.
+  function visibleThreads(){
+    const list = filteredThreads();
+    return sortNewestFirst ? list : [...list].reverse();
+  }
+  function renderThreads(){
+    const tb = $("#threadRows"); tb.innerHTML="";
+    const vis = visibleThreads();
+    vis.forEach(t=>{
+      const tr = document.createElement('tr');
+      tr.className = sel.has(t.id) ? 'sel':'';
+      const totalCell = (t.total==null) ? '<span class="muted">—</span>' : fmt(t.total);
+      const mineCell  = (t.mine==null)  ? '<span class="muted">—</span>' : fmt(t.mine);
+      const hugeTag   = (t.total!=null && t.total>20000) ? '<span class="tag">huge</span>' : '';
+      const statusCell = t.purged ? '<span class="tag done">purged</span>'
+                        : (t.scanned ? '<span class="muted">scanned</span>' : '<span class="muted">—</span>');
+      tr.innerHTML = `
+        <td><input type="checkbox" data-id="${t.id}" ${sel.has(t.id)?'checked':''} ${t.purged?'disabled':''}></td>
+        <td>${t.name}${hugeTag}</td>
+        <td class="num">${totalCell}</td>
+        <td class="num">${mineCell}</td>
+        <td>${statusCell}</td>`;
+      tb.appendChild(tr);
+    });
+    tb.querySelectorAll('input[type=checkbox]').forEach(cb=>{
+      cb.addEventListener('change',()=>{ cb.checked ? sel.add(cb.dataset.id) : sel.delete(cb.dataset.id); syncSel(); });
+    });
+    const anyFilter = filter.mineOp!=="any" || filter.totalOp!=="any" ||
+                      filter.purged!=="any" || filter.scanned!=="any";
+    $("#f_count").textContent = anyFilter ? `showing ${vis.length} of ${threads.length}` : "";
+  }
+  function syncSel(){
+    renderThreads();
+    const n = sel.size;
+    const picked = threads.filter(t=>sel.has(t.id));
+    const known = picked.filter(t=>t.mine!=null).reduce((a,t)=>a+t.mine,0);
+    const anyUnknown = picked.some(t=>t.mine==null);
+    $("#selCount").textContent = n===0 ? "0 selected"
+      : `${n} selected · ${fmt(known)}${anyUnknown?"+":""} of your messages`;
+    $("#purgeBtn").disabled = n===0;
+    $("#scanBtn").disabled = n===0;
+    const selectable = filteredThreads().filter(t=>!t.purged);
+    $("#selAll").checked = selectable.length>0 && selectable.every(t=>sel.has(t.id));
+  }
+  $("#selAll").addEventListener('change',e=>{
+    // Select-all acts on the currently visible (filtered) threads.
+    if(e.target.checked) filteredThreads().forEach(t=>{ if(!t.purged) sel.add(t.id); });
+    else filteredThreads().forEach(t=>sel.delete(t.id));
+    syncSel();
+  });
+  $("#sortBtn").addEventListener('click',()=>{
+    sortNewestFirst = !sortNewestFirst;
+    $("#sortBtn").textContent = sortNewestFirst ? "Sort: Newest first" : "Sort: Oldest first";
+    renderThreads();
+  });
+
+  // ---- Filter controls ----
+  function readFilter(){
+    filter.mineOp   = $("#f_mine_op").value;
+    filter.mineVal  = $("#f_mine_val").value;
+    filter.totalOp  = $("#f_total_op").value;
+    filter.totalVal = $("#f_total_val").value;
+    filter.purged   = $("#f_purged").value;
+    filter.scanned  = $("#f_scanned").value;
+    renderThreads(); syncSel();
+  }
+  ["f_mine_op","f_mine_val","f_total_op","f_total_val","f_purged","f_scanned"]
+    .forEach(id => { $("#"+id).addEventListener('input', readFilter); });
+  $("#f_clear").addEventListener('click',()=>{
+    $("#f_mine_op").value="any"; $("#f_mine_val").value="";
+    $("#f_total_op").value="any"; $("#f_total_val").value="";
+    $("#f_purged").value="any"; $("#f_scanned").value="any";
+    readFilter();
+  });
+
+  // ---- Login: check session, run real login flow if needed, then load ----
+  $("#loginBtn").addEventListener('click', async ()=>{
+    const { invoke } = window.__TAURI__.core;
+    try {
+      setStatus("Checking session…");
+      let st = await invoke('check_login');       // {logged_in, username?, reason?}
+      let username = st.username || null;
+
+      if (!st.logged_in) {
+        // No valid session — open the real Instagram login in a browser.
+        $("#ovLogin").classList.remove('show');
+        $("#ix_title").textContent = "Waiting for Instagram login…";
+        $("#ix_sub").textContent = "A browser window opened. Log in there — this continues automatically once you're in.";
+        $("#ovIndex").classList.add('show');
+        setStatus("Opening Instagram login…");
+        const res = await invoke('login');        // blocks until captured
+        username = res.username || null;
+        $("#ovIndex").classList.remove('show');
+      }
+
+      $("#ovLogin").classList.remove('show');
+      $("#sb_acct").textContent = username ? ("@" + username) : "Logged in";
+      setStatus("Loading threads…");
+      await loadThreads();
+    } catch (e) {
+      $("#ovIndex").classList.remove('show');
+      setStatus("Login error — see console (Cmd+Opt+I)");
+      console.error("login flow failed:", e);
+    }
+  });
+  $("#reindexBtn").addEventListener('click', ()=> runIndex());
+
+  // ---- Streaming index: crawl threads live via the engine ----
+  // TESTING: limited to the most recent 1 thread. Set INDEX_LIMIT = 0 later
+  // to index the whole account.
+  const INDEX_LIMIT = 1;
+  async function runIndex(){
+    const { invoke, Channel } = window.__TAURI__.core;
+    threads = []; sel.clear(); renderThreads(); syncSel(); recordTotals();
+
+    $("#ix_title").textContent = "Loading your conversations…";
+    $("#ix_sub").textContent = INDEX_LIMIT
+      ? `Fetching your most recent ${INDEX_LIMIT} conversation${INDEX_LIMIT>1?'s':''} (testing). Deep Scan a chat to see its message counts.`
+      : "Fetching your conversation list. Deep Scan a chat to see its message counts.";
+    $("#ix_thread").textContent = "—";
+    $("#ix_count").textContent = "0 threads";
+    $("#ovIndex").classList.add('show');
+    setStatus("Indexing…");
+
+    let count = 0;
+    const channel = new Channel();
+    channel.onmessage = (ev)=>{
+      switch (ev.event) {
+        case "thread_indexed":
+          count++;
+          threads.push({ id: ev.thread_id, name: ev.name,
+                         total: ev.total, mine: ev.mine,
+                         scanned: !!ev.scanned, purged: ev.purged });
+          renderThreads(); syncSel(); recordTotals();
+          $("#ix_thread").textContent = "Found: " + ev.name;
+          $("#ix_count").textContent = count + " thread" + (count===1?"":"s");
+          break;
+        case "index_start":
+          $("#ix_thread").textContent = "Starting…";
+          break;
+        case "error":
+          console.error("index error event:", ev);
+          break;
+      }
+    };
+
+    try {
+      await invoke('index', { limit: INDEX_LIMIT, rebuild: true, channel });
+      setStatus(`Indexed ${count} thread(s)`);
+    } catch (e) {
+      setStatus("Index error — see console (Cmd+Opt+I)");
+      console.error("index failed:", e);
+    } finally {
+      $("#ovIndex").classList.remove('show');
+    }
+  }
+
+  // ---- Deep Scan: fetch message counts for the SELECTED threads ----
+  async function runScan(){
+    const { invoke, Channel } = window.__TAURI__.core;
+    const picked = threads.filter(t=>sel.has(t.id));
+    if(!picked.length) return;
+    const threadIds = picked.map(t=>t.id);
+
+    $("#ix_title").textContent = "Deep scanning selected chats…";
+    $("#ix_sub").textContent = "Reading full history to count messages. Large chats can take a while.";
+    $("#ix_thread").textContent = "—";
+    $("#ix_count").textContent = `0 / ${threadIds.length}`;
+    $("#ovIndex").classList.add('show');
+    setStatus("Deep scanning…");
+
+    const channel = new Channel();
+    channel.onmessage = (ev)=>{
+      switch (ev.event) {
+        case "scan_progress":
+          $("#ix_thread").textContent = "Scanning: " + ev.name;
+          $("#ix_count").textContent = `${ev.done} / ${ev.total}`;
+          break;
+        case "thread_scanned": {
+          const t = threads.find(x=>x.id===ev.thread_id);
+          if (t){ t.total = ev.total; t.mine = ev.mine; t.scanned = true; t.purged = ev.purged; }
+          renderThreads(); syncSel(); recordTotals();
+          break;
+        }
+        case "error":
+          console.error("scan error event:", ev);
+          break;
+      }
+    };
+
+    try {
+      await invoke('scan', { threadIds, rebuild: S.rebuild, channel });
+      setStatus("Scan complete");
+    } catch (e) {
+      setStatus("Scan error — see console (Cmd+Opt+I)");
+      console.error("scan failed:", e);
+    } finally {
+      $("#ovIndex").classList.remove('show');
+    }
+  }
+  $("#scanBtn").addEventListener('click', ()=> runScan());
+
+  async function loadThreads(){
+    try {
+      const { invoke } = window.__TAURI__.core;
+      const res = await invoke('list_threads');   // {event:'threads', threads:[...]}
+      threads = (res.threads || []).map(t => ({
+        id: t.thread_id, name: t.name,
+        total: t.total, mine: t.mine,
+        scanned: !!t.scanned, purged: t.purged
+      }));
+      renderThreads(); syncSel(); recordTotals();
+      setStatus(`Loaded ${threads.length} thread(s) from engine`);
+    } catch (e) {
+      setStatus("Engine error — see console (Cmd+Opt+I)");
+      console.error("list_threads failed:", e);
+    }
+  }
+
+  function recordTotals(){
+    const doneCount = threads.filter(t=>t.purged).length;
+    const rem = threads.reduce((a,t)=>a + (t.purged?0:(t.mine||0)),0);
+    const deleted = threads.reduce((a,t)=>a + (t.purged?(t.mine||0):0),0);
+    $("#cx_msgs").textContent = fmt(deleted);
+    $("#cx_done").textContent = doneCount;
+    $("#cx_total").textContent = "/"+threads.length;
+    $("#cx_rem").textContent = fmt(rem);
+    const pct = threads.length ? Math.round(doneCount/threads.length*100) : 0;
+    $("#cx_pct").textContent = pct+"%"; $("#cx_bar").style.width = pct+"%";
+  }
+
+  $("#purgeBtn").addEventListener('click',()=>{
+    const picked = threads.filter(t=>sel.has(t.id));
+    const scanned   = picked.filter(t=>t.mine!=null);
+    const unscanned = picked.filter(t=>t.mine==null);
+    const knownMsgs = scanned.reduce((a,t)=>a+t.mine,0);
+    const secs = estimateSeconds(knownMsgs);
+    const nT = picked.length, tw = nT>1?'s':'';
+
+    let scope;
+    if (unscanned.length === 0) {
+      // every thread scanned — exact count + estimate
+      scope = `You’re about to unsend <b>${fmt(knownMsgs)}</b> of your messages across `+
+              `<b>${nT}</b> thread${tw}.`+
+              `<br><span class="muted">Estimated time at ${activePreset} pace: ~${humanTime(secs)}.</span>`;
+    } else if (scanned.length === 0) {
+      // nothing scanned — count genuinely unknown up front
+      scope = `You’re about to unsend your messages across <b>${nT}</b> thread${tw}.`+
+              `<br><span class="muted">${unscanned.length===1?"This chat hasn’t":"These chats haven’t"} been Deep Scanned, `+
+              `so the message count isn’t known yet — ghosted counts each chat’s history when it starts, then deletes. `+
+              `A time estimate isn’t available until they’re scanned.</span>`;
+    } else {
+      // mixed — a known floor plus unscanned unknowns
+      scope = `You’re about to unsend <b>at least ${fmt(knownMsgs)}</b> of your messages across `+
+              `<b>${nT}</b> thread${tw}.`+
+              `<br><span class="muted"><b>${unscanned.length}</b> of ${nT===2?"these":"them"} `+
+              `${unscanned.length===1?"hasn’t":"haven’t"} been Deep Scanned, so the true total is higher — `+
+              `those are counted when the run reaches them. Estimated time: at least ~${humanTime(secs)} (excludes unscanned).</span>`;
+    }
+    $("#cf_scope").innerHTML = scope;
+    $("#cf_input").value=""; $("#cf_go").disabled=true;
+    $("#ovConfirm").classList.add('show'); $("#cf_input").focus();
+  });
+  $("#cf_input").addEventListener('input',e=>{ $("#cf_go").disabled = e.target.value.trim().toLowerCase()!=="delete"; });
+  $("#cf_cancel").addEventListener('click',()=> $("#ovConfirm").classList.remove('show'));
+  $("#cf_go").addEventListener('click',()=>{ $("#ovConfirm").classList.remove('show'); startJob(); });
+
+  function estimateSeconds(msgs){
+    const avg=(S.min+S.max)/2; let secs = msgs*avg;
+    if(S.batch>0) secs += Math.floor(msgs/S.batch)*S.pause;
+    return secs;
+  }
+  function humanTime(s){
+    if(s<90) return Math.round(s)+" sec";
+    if(s<5400) return Math.round(s/60)+" min";
+    return (s/3600).toFixed(1)+" hr";
+  }
+
+  // ---- Real streaming purge (drives the In Progress tab from the engine) ----
+  async function startJob(){
+    const { invoke, Channel } = window.__TAURI__.core;
+    const picked = threads.filter(t=>sel.has(t.id));
+    if(!picked.length) return;
+    const threadIds = picked.map(t=>t.id);
+
+    $("#idleMsg").style.display="none"; $("#jobBox").style.display="block";
+    clearJobBars();
+    $("#jp_cur").textContent = "Starting…";
+    goTab('progress'); setStatus("Starting…");
+    jobActive = true; jobPaused = false; updateJobButtons();
+
+    const channel = new Channel();
+    channel.onmessage = (ev)=> handlePurgeEvent(ev);
+
+    try {
+      await invoke('purge', {
+        threadIds,
+        minDelay: S.min, maxDelay: S.max,
+        batchSize: S.batch, pauseBetweenBatches: S.pause,
+        maxDeletes: S.cap, maxPerHour: S.perHour, rebuild: S.rebuild,
+        channel
+      });
+    } catch (e) {
+      setStatus("Purge error — see console (Cmd+Opt+I)");
+      console.error("purge failed:", e);
+    } finally {
+      jobActive = false; jobPaused = false; updateJobButtons();
+    }
+  }
+
+  function handlePurgeEvent(ev){
+    switch (ev.event) {
+      case "job_start": {
+        jobTotal = ev.total_messages || 0;
+        $("#jp_count").textContent = `0 / ${fmt(jobTotal)} messages`;
+        $("#jp_cur").textContent = "Preparing…";
+        const capNote = ev.max_per_hour ? ` · capped at ${ev.max_per_hour}/hr` : "";
+        setStatus(`Deleting across ${ev.threads||0} thread(s)${capNote}…`);
+        break;
+      }
+      case "progress":
+        $("#jp_pause").classList.remove('show');   // live progress clears any pause pill
+        $("#jp_bar").style.width = (ev.total ? (ev.deleted/ev.total*100) : 0) + "%";
+        $("#jp_count").textContent = `${fmt(ev.deleted)} / ${fmt(ev.total)} messages`;
+        $("#jp_rate").textContent = (ev.rate!=null ? ev.rate : "—") + " msg/s";
+        $("#jp_eta").textContent = humanTime(ev.eta_sec || 0);
+        $("#jp_cur").textContent = "Purging: " + (ev.thread_name || "");
+        $("#jt_name").textContent = ev.thread_name || "";
+        $("#jt_bar").style.width = (ev.thread_total ? (ev.thread_done/ev.thread_total*100) : 0) + "%";
+        $("#jt_count").textContent = `${fmt(ev.thread_done||0)} / ${fmt(ev.thread_total||0)} in thread`;
+        if (ev.batch) $("#jt_batch").textContent = "batch " + ev.batch;
+        setStatus("Deleting…");
+        break;
+      case "thread_done": {
+        const t = threads.find(x=>x.id===ev.thread_id);
+        if (t){ t.purged = true; sel.delete(t.id); }
+        renderThreads(); syncSel(); recordTotals();
+        break;
+      }
+      case "rate_wait": {
+        // Hard hourly cap reached — waiting so we never exceed it.
+        const mins = Math.ceil((ev.seconds||0)/60);
+        $("#jp_pause").textContent = `hourly limit — resuming in ~${mins} min`;
+        $("#jp_pause").classList.add('show');
+        setStatus(`Hourly cap (${ev.per_hour}/hr) reached — waiting to stay safe…`);
+        break;
+      }
+      case "rate_resume":
+        $("#jp_pause").classList.remove('show');
+        setStatus("Deleting…");
+        break;
+      case "backoff":
+        $("#jp_pause").textContent = "paused — backing off";
+        $("#jp_pause").classList.add('show');
+        setStatus("Rate-limit backoff…");
+        break;
+      case "batch_pause":
+        $("#jp_pause").textContent = "batch pause";
+        $("#jp_pause").classList.add('show');
+        setStatus("Between batches…");
+        break;
+      case "paused":
+        if (ev.paused){ setStatus("Paused"); }
+        else { $("#jp_pause").classList.remove('show'); setStatus("Deleting…"); }
+        break;
+      case "job_done":
+        $("#jp_pause").classList.remove('show');
+        $("#jp_cur").textContent = "Complete"; $("#jp_eta").textContent = "0 sec";
+        setStatus(`Done — ${fmt(ev.deleted||0)} deleted`);
+        jobActive = false; jobPaused = false; updateJobButtons();
+        renderThreads(); syncSel(); recordTotals();
+        break;
+      case "job_stopped":
+        $("#jp_pause").classList.remove('show');
+        setStatus(`Stopped — ${fmt(ev.deleted||0)} deleted, progress saved`);
+        jobActive = false; jobPaused = false; updateJobButtons();
+        break;
+      case "job_capped":
+        setStatus(`Reached cap — ${fmt(ev.deleted||0)} deleted`);
+        jobActive = false; jobPaused = false; updateJobButtons();
+        break;
+      case "session_expired":
+        setStatus("Session expired — progress saved. Log in again.");
+        jobActive = false; jobPaused = false; updateJobButtons();
+        break;
+      case "error":
+        console.error("purge error event:", ev);
+        break;
+    }
+  }
+
+  function updateJobButtons(){
+    $("#pauseBtn").disabled  = !(jobActive && !jobPaused);
+    $("#resumeBtn").disabled = !(jobActive &&  jobPaused);
+    $("#stopBtn").disabled   = !jobActive;
+  }
+  function clearJobBars(){
+    $("#jp_bar").style.width="0%"; $("#jt_bar").style.width="0%";
+    $("#jp_count").textContent="0 / 0 messages"; $("#jp_eta").textContent="—";
+    $("#jp_cur").textContent="—"; $("#jp_rate").textContent="—";
+    $("#jt_name").textContent="—"; $("#jt_count").textContent="0 / 0 in thread";
+    $("#jt_batch").textContent="batch —"; $("#jp_pause").classList.remove('show');
+  }
+
+  async function purgeControl(action){
+    const { invoke } = window.__TAURI__.core;
+    try { await invoke('purge_control', { action }); }
+    catch (e){ console.error("purge_control failed:", e); }
+  }
+  $("#pauseBtn").addEventListener('click', async ()=>{
+    if(!jobActive || jobPaused) return;
+    await purgeControl('pause'); jobPaused = true; updateJobButtons();
+  });
+  $("#resumeBtn").addEventListener('click', async ()=>{
+    if(!jobActive || !jobPaused) return;
+    await purgeControl('resume'); jobPaused = false; updateJobButtons();
+  });
+  $("#stopBtn").addEventListener('click', async ()=>{
+    if(!jobActive) return;
+    setStatus("Stopping…");
+    await purgeControl('stop');   // engine emits job_stopped, which finalizes + saves
+  });
+
+  $("#sc_add").addEventListener('click',()=>{
+    const tr=document.createElement('tr');
+    const scope=$("#sc_scope").value, when=$("#sc_when").value||"—", rep=$("#sc_rep").value, pre=$("#sc_preset").value;
+    tr.innerHTML=`<td>${scope}</td><td>${when.replace('T',', ')}</td><td>${rep}</td><td>${pre}</td><td><button class="btn" data-del>Remove</button></td>`;
+    $("#schedRows").appendChild(tr);
+  });
+  $("#schedRows").addEventListener('click',e=>{ if(e.target.matches('[data-del]')) e.target.closest('tr').remove(); });
+
+  function renderPresets(){
+    const bar=$("#presetBar"); bar.innerHTML="";
+    presets.forEach(p=>{
+      const b=document.createElement('button');
+      b.className='preset'; b.setAttribute('aria-pressed', p.name===activePreset);
+      b.innerHTML = p.name + (p.blessed?'':' <span class="warn">⚠</span>');
+      b.addEventListener('click',()=>{ applyPreset(p.name); });
+      bar.appendChild(b);
+    });
+  }
+  function applyPreset(name){
+    const p=presets.find(x=>x.name===name); if(!p) return;
+    activePreset=name; S.perHour=p.perHour; S.min=p.min; S.max=p.max; S.batch=p.batch; S.pause=p.pause; S.cap=p.cap;
+    fillSettings(); renderPresets(); checkAggressive();
+  }
+  function fillSettings(){
+    $("#s_perhour").value=S.perHour;
+    $("#s_min").value=S.min; $("#s_max").value=S.max; $("#s_batch").value=S.batch;
+    $("#s_pause").value=S.pause; $("#s_cap").value=S.cap;
+    $("#s_rebuild").checked=S.rebuild;
+  }
+  function readSettings(){
+    // Enforce the hard 200 ceiling right at input — never store above it.
+    let ph = +$("#s_perhour").value || SAFE_PER_HOUR;
+    ph = Math.max(1, Math.min(ph, HARD_CAP_PER_HOUR));
+    $("#s_perhour").value = ph;
+    S.perHour = ph;
+    S.min=+$("#s_min").value; S.max=+$("#s_max").value; S.batch=+$("#s_batch").value;
+    S.pause=+$("#s_pause").value; S.cap=+$("#s_cap").value;
+    S.rebuild=$("#s_rebuild").checked; checkAggressive();
+  }
+  function checkAggressive(){
+    // Warn whenever the target rate is above the recommended safe ceiling.
+    const risky = S.perHour > SAFE_PER_HOUR;
+    $("#warnBar").classList.toggle('show', risky);
+  }
+  ["s_perhour","s_min","s_max","s_batch","s_pause","s_cap","s_rebuild"].forEach(id=>{
+    $("#"+id).addEventListener('input', readSettings);
+  });
+  $("#saveDefaults").addEventListener('click',()=>{ readSettings(); setStatus("Saved application defaults"); });
+  $("#savePreset").addEventListener('click',()=>{
+    readSettings();
+    const nm = prompt("Name this preset:", "My preset"); if(!nm) return;
+    const risky = S.perHour > SAFE_PER_HOUR;
+    presets.push({name:nm, blessed:!risky, perHour:S.perHour, min:S.min,max:S.max,batch:S.batch,pause:S.pause,cap:S.cap});
+    activePreset=nm; renderPresets();
+    setStatus(risky? `Saved custom preset (${S.perHour}/hr — above recommended)` : "Saved custom preset");
+  });
+
+  renderThreads(); syncSel(); renderPresets(); fillSettings(); recordTotals();
+})();
+</script>
+</body>
+</html>

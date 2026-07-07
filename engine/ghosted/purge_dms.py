@@ -195,6 +195,8 @@ def build_queue(cl, summary, my_user_id, include_others, export_dir):
         "users": users,
         "built_at": datetime.now().isoformat(timespec="seconds"),
         "complete": True,          # full history was fetched
+        "total_messages": len(messages),   # everyone's messages (for UI)
+        "thread_title": summary.get("thread_title"),
         "total": len(pending),
         "pending": pending,
         "done": [],
