@@ -278,7 +278,12 @@
   @keyframes shimmer{ 0%{background-position:150% 0} 60%,100%{background-position:-60% 0} }
   @keyframes wordIn{ from{opacity:0; transform:translateY(8px)} to{opacity:1; transform:translateY(0)} }
   @keyframes splashSlide{ to{background-position:-200% 0} }
+  .splash-login{ font-size:13px !important; padding:9px 24px !important; margin-top:6px;
+    animation:wordIn .45s ease-out both; }
+  .splash-login[disabled]{ opacity:.5 !important; }
+  .splash-note{ font-size:11px; color:#3f6a9c; min-height:15px; margin-top:2px; }
   @media (prefers-reduced-motion: reduce){
+    .splash-login{ opacity:1; animation:none !important }
     .splash-icon,.splash-badge,.splash-halo,.splash-icon::after,
     .splash-bar-fill,.splash-bar-fill::after{ animation:none !important }
     .splash-word,.splash-tag,.splash-bar{ opacity:1; animation:none !important }
@@ -302,7 +307,9 @@
     <div class="splash-word">ghosted</div>
     <div class="splash-tag">Bulk-unsend your Instagram DMs</div>
   </div>
-  <div class="splash-bar"><div class="splash-bar-fill"></div></div>
+  <button class="btn primary splash-login" id="splashLogin" style="display:none">Log in with Instagram</button>
+  <div class="splash-bar" id="splashBar" style="display:none"><div class="splash-bar-fill"></div></div>
+  <div class="splash-note" id="splashNote"></div>
 </div>
 
 <div class="app" role="application" aria-label="ghosted">
@@ -499,14 +506,6 @@
   </div>
 
   <!-- Overlays (cover the whole app) -->
-  <div class="overlay show" id="ovLogin">
-    <div class="sheet">
-      <div class="brand"><div class="ghosticon">👻</div><div><h3 style="margin:0">Welcome to ghosted</h3><div class="muted">Bulk-unsend your Instagram DMs.</div></div></div>
-      <p>Log in through Instagram’s own page — your password never touches this app. We keep only the session, on this Mac.</p>
-      <div class="actions"><button class="btn primary" id="loginBtn">Log in to Instagram</button></div>
-    </div>
-  </div>
-
   <div class="overlay" id="ovIndex">
     <div class="sheet">
       <h3 id="ix_title">Indexing your messages…</h3>
@@ -674,42 +673,84 @@
     readFilter();
   });
 
-  // ---- Login: check session, run real login flow if needed, then load ----
-  $("#loginBtn").addEventListener('click', async ()=>{
+  // ---- Login lives on the startup splash now ----
+  function hideSplash(){
+    const splash = document.getElementById('splash');
+    if(!splash) return;
+    splash.classList.add('hide');
+    setTimeout(()=>{ splash.style.display = 'none'; }, 550);
+  }
+  $("#splashLogin").addEventListener('click', async ()=>{
     const { invoke } = window.__TAURI__.core;
+    const btn = $("#splashLogin");
+    btn.disabled = true;
+    $("#splashBar").style.display = "";           // show the loading bar
+    $("#splashNote").textContent = "Checking session…";
     try {
-      setStatus("Checking session…");
       let st = await invoke('check_login');       // {logged_in, username?, reason?}
       let username = st.username || null;
 
       if (!st.logged_in) {
-        // No valid session — open the real Instagram login in a browser.
-        $("#ovLogin").classList.remove('show');
-        $("#ix_title").textContent = "Waiting for Instagram login…";
-        $("#ix_sub").textContent = "A browser window opened. Log in there — this continues automatically once you're in.";
-        $("#ovIndex").classList.add('show');
-        setStatus("Opening Instagram login…");
-        const res = await invoke('login');        // blocks until captured
+        $("#splashNote").textContent = "Opening Instagram login — finish it in the browser window…";
+        const res = await invoke('login');        // opens browser; resolves when captured
         username = res.username || null;
-        $("#ovIndex").classList.remove('show');
       }
 
-      $("#ovLogin").classList.remove('show');
+      $("#splashNote").textContent = "Loading your conversations…";
       $("#sb_acct").textContent = username ? ("@" + username) : "Logged in";
-      setStatus("Loading threads…");
       await loadThreads();
+      hideSplash();
+      checkSchedules();                           // fire anything already due
     } catch (e) {
-      $("#ovIndex").classList.remove('show');
-      setStatus("Login error — see console (Cmd+Opt+I)");
+      $("#splashNote").textContent = "Login error — see console (Cmd+Opt+I)";
       console.error("login flow failed:", e);
+      btn.disabled = false;
+      $("#splashBar").style.display = "none";
     }
   });
+
+  // On startup: if already logged in, skip the button — just show the loading
+  // animation and auto-load. Otherwise reveal the "Log in with Instagram" button.
+  async function initSplash(){
+    const { invoke } = window.__TAURI__.core;
+    const t0 = Date.now();
+    const sleep = ms => new Promise(r=>setTimeout(r, ms));
+    // hold the splash until at least `ms` have elapsed since it appeared
+    async function holdUntil(ms){ const el = Date.now() - t0; if (el < ms) await sleep(ms - el); }
+
+    $("#splashBar").style.display = "";        // loading animation while we work
+    $("#splashNote").textContent = "Checking session…";
+    try {
+      const st = await invoke('check_login');
+      if (st.logged_in) {
+        await holdUntil(1300);                 // let "Checking session…" register
+        $("#splashNote").textContent = "Loading your conversations…";
+        $("#sb_acct").textContent = st.username ? ("@" + st.username) : "Logged in";
+        await loadThreads();
+        await holdUntil(2600);                 // comfortable minimum on-screen time
+        hideSplash();
+        checkSchedules();
+      } else {
+        await holdUntil(1300);                 // don't flash the button in instantly
+        $("#splashBar").style.display = "none";
+        $("#splashNote").textContent = "";
+        $("#splashLogin").style.display = "";
+      }
+    } catch (e) {
+      console.error("check_login failed:", e);
+      await holdUntil(1300);
+      $("#splashBar").style.display = "none";
+      $("#splashNote").textContent = "";
+      $("#splashLogin").style.display = "";
+    }
+  }
+
   $("#reindexBtn").addEventListener('click', ()=> runIndex());
 
   // ---- Streaming index: crawl threads live via the engine ----
   // TESTING: limited to the most recent 1 thread. Set INDEX_LIMIT = 0 later
   // to index the whole account.
-  const INDEX_LIMIT = 0;
+  const INDEX_LIMIT = 1;
   async function runIndex(){
     const { invoke, Channel } = window.__TAURI__.core;
     threads = []; sel.clear(); renderThreads(); syncSel(); recordTotals();
@@ -1162,9 +1203,11 @@
   // Poll for due schedules. Only fires when nothing else is happening and a
   // thread list is loaded (i.e., we're logged in and ready).
   function appBusy(){
+    const sp = document.getElementById('splash');
+    const splashVisible = sp && sp.style.display !== 'none' && !sp.classList.contains('hide');
     return jobActive
+      || splashVisible
       || $("#ovIndex").classList.contains('show')
-      || $("#ovLogin").classList.contains('show')
       || $("#ovConfirm").classList.contains('show');
   }
   async function checkSchedules(){
@@ -1272,19 +1315,8 @@
   loadSchedules();
   loadPrefs();
 
-  // ---- startup splash: hold briefly, then reveal the app (click to skip) ----
-  (function(){
-    const splash = document.getElementById('splash');
-    if(!splash) return;
-    let done = false;
-    function hide(){
-      if(done) return; done = true;
-      splash.classList.add('hide');
-      setTimeout(()=>{ splash.style.display = 'none'; }, 550);
-    }
-    setTimeout(hide, 2000);
-    splash.addEventListener('click', hide);
-  })();
+  // Kick off startup: auto-load if logged in, else show the login button.
+  initSplash();
 })();
 </script>
 </body>
