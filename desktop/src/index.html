@@ -481,9 +481,11 @@
         <legend>Scope &amp; cache</legend>
         <div class="row"><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="s_rebuild"> Rebuild cache (re-fetch history)</label></div>
       </fieldset>
-      <div style="display:flex;gap:8px">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button class="btn" id="saveDefaults">Save as application defaults</button>
-        <button class="btn" id="savePreset">Save as new preset…</button>
+        <span style="width:1px;height:20px;background:var(--line-soft)"></span>
+        <input type="text" id="presetName" placeholder="New preset name" style="width:150px">
+        <button class="btn" id="savePreset">Save preset</button>
       </div>
     </section>
 
@@ -707,7 +709,7 @@
   // ---- Streaming index: crawl threads live via the engine ----
   // TESTING: limited to the most recent 1 thread. Set INDEX_LIMIT = 0 later
   // to index the whole account.
-  const INDEX_LIMIT = 1;
+  const INDEX_LIMIT = 0;
   async function runIndex(){
     const { invoke, Channel } = window.__TAURI__.core;
     threads = []; sel.clear(); renderThreads(); syncSel(); recordTotals();
@@ -1212,18 +1214,63 @@
   ["s_perhour","s_min","s_max","s_batch","s_pause","s_cap","s_rebuild"].forEach(id=>{
     $("#"+id).addEventListener('input', readSettings);
   });
-  $("#saveDefaults").addEventListener('click',()=>{ readSettings(); setStatus("Saved application defaults"); });
-  $("#savePreset").addEventListener('click',()=>{
+  // ---- persisted settings: application defaults + custom presets ----
+  async function loadPrefs(){
+    const { invoke } = window.__TAURI__.core;
+    try {
+      const res = await invoke('prefs_load');
+      const prefs = res.prefs || {};
+      if (prefs.defaults) {
+        Object.assign(S, prefs.defaults);
+        S.perHour = Math.max(1, Math.min(S.perHour || SAFE_PER_HOUR, HARD_CAP_PER_HOUR));
+        fillSettings(); checkAggressive();
+      }
+      if (Array.isArray(prefs.customPresets)) {
+        prefs.customPresets.forEach(cp=>{
+          if (!presets.find(p=>p.name===cp.name)) presets.push({ ...cp, custom:true });
+        });
+        renderPresets();
+      }
+    } catch(e){ console.error("prefs_load failed:", e); }
+  }
+  async function savePrefs(){
+    const { invoke } = window.__TAURI__.core;
+    const prefs = {
+      defaults: { perHour:S.perHour, min:S.min, max:S.max, batch:S.batch, pause:S.pause, cap:S.cap },
+      customPresets: presets.filter(p=>p.custom).map(p=>({
+        name:p.name, blessed:p.blessed, perHour:p.perHour,
+        min:p.min, max:p.max, batch:p.batch, pause:p.pause, cap:p.cap
+      })),
+    };
+    try { await invoke('prefs_save', { prefs }); }
+    catch(e){ console.error("prefs_save failed:", e); }
+  }
+
+  $("#saveDefaults").addEventListener('click', async ()=>{
     readSettings();
-    const nm = prompt("Name this preset:", "My preset"); if(!nm) return;
+    await savePrefs();
+    setStatus("Saved as application defaults");
+  });
+
+  $("#savePreset").addEventListener('click', async ()=>{
+    readSettings();
+    const nm = ($("#presetName").value || "").trim();
+    if(!nm){ setStatus("Enter a name for the preset"); $("#presetName").focus(); return; }
     const risky = S.perHour > SAFE_PER_HOUR;
-    presets.push({name:nm, blessed:!risky, perHour:S.perHour, min:S.min,max:S.max,batch:S.batch,pause:S.pause,cap:S.cap});
-    activePreset=nm; renderPresets();
-    setStatus(risky? `Saved custom preset (${S.perHour}/hr — above recommended)` : "Saved custom preset");
+    const data = { name:nm, blessed:!risky, custom:true, perHour:S.perHour,
+                   min:S.min, max:S.max, batch:S.batch, pause:S.pause, cap:S.cap };
+    const existing = presets.find(p=>p.name===nm);
+    if (existing) Object.assign(existing, data); else presets.push(data);
+    activePreset = nm;
+    $("#presetName").value = "";
+    renderPresets();
+    await savePrefs();
+    setStatus(risky ? `Saved preset "${nm}" (${S.perHour}/hr — above recommended)` : `Saved preset "${nm}"`);
   });
 
   renderThreads(); syncSel(); renderPresets(); fillSettings(); recordTotals();
   loadSchedules();
+  loadPrefs();
 
   // ---- startup splash: hold briefly, then reveal the app (click to skip) ----
   (function(){

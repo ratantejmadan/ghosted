@@ -123,6 +123,28 @@ def save_schedules(scheds):
         pass
 
 
+# --- user preferences: application defaults + custom pacing presets --------
+PREFS_FILE = "prefs.json"
+
+
+def load_prefs():
+    if os.path.exists(PREFS_FILE):
+        try:
+            with open(PREFS_FILE) as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def save_prefs(prefs):
+    try:
+        with open(PREFS_FILE, "w") as f:
+            json.dump(prefs, f, indent=2)
+    except Exception:
+        pass
+
+
 # --- hourly rate cap (hard ceiling, persisted across restarts) -------------
 # Instagram throttles at roughly 200 actions/hour per account. We enforce a
 # rolling-window cap so we NEVER exceed it, and default to a safer 150/hour.
@@ -532,6 +554,15 @@ class Engine:
         save_schedules(scheds)
         emit("schedules", schedules=scheds)
 
+    # -- user preferences (application defaults + custom presets) --
+    def do_prefs_load(self):
+        emit("prefs", prefs=load_prefs())
+
+    def do_prefs_save(self, params):
+        prefs = params.get("prefs", {})
+        save_prefs(prefs)
+        emit("prefs", prefs=prefs)
+
     # -- dispatch --
     def start_worker(self, fn, *a):
         if self.busy():
@@ -566,6 +597,10 @@ class Engine:
             self.do_schedules_list()
         elif cmd == "schedules_save":
             self.do_schedules_save(params)
+        elif cmd == "prefs_load":
+            self.do_prefs_load()
+        elif cmd == "prefs_save":
+            self.do_prefs_save(params)
         elif cmd == "shutdown":
             emit("bye"); return False
         else:

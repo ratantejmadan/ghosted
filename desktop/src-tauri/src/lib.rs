@@ -78,6 +78,18 @@ fn schedules_save(schedules: Value) -> Result<Value, String> {
     engine_oneshot(&cmd, "schedules")
 }
 
+#[tauri::command]
+fn prefs_load() -> Result<Value, String> {
+    engine_oneshot("{\"cmd\":\"prefs_load\"}", "prefs")
+}
+
+#[tauri::command]
+fn prefs_save(prefs: Value) -> Result<Value, String> {
+    let params = serde_json::json!({ "prefs": prefs });
+    let cmd = serde_json::json!({ "cmd": "prefs_save", "params": params }).to_string();
+    engine_oneshot(&cmd, "prefs")
+}
+
 fn run_login_blocking() -> Result<Value, String> {
     let mut child = Command::new(VENV_PYTHON)
         .arg("-u").arg("-m").arg("ghosted.login_browser")
@@ -342,6 +354,8 @@ pub fn run() {
             check_login,
             schedules_list,
             schedules_save,
+            prefs_load,
+            prefs_save,
             login,
             index,
             scan,
