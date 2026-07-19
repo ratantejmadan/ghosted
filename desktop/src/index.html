@@ -50,8 +50,9 @@
     background:linear-gradient(var(--sel),var(--sel-bot)); color:#fff; border-color:#255bb5;
     text-shadow:0 -1px 0 rgba(0,0,0,.25); box-shadow:0 1px 2px rgba(0,0,0,.25) inset;
   }
-  .tab .dot{width:9px; height:9px; border-radius:2px; background:#8aa0bf; display:inline-block}
-  .tab[aria-selected="true"] .dot{background:#dbe8ff}
+  .tab .ic{width:15px; height:15px; display:inline-flex; align-items:center; flex:0 0 auto; color:#5a6b85}
+  .tab .ic svg{width:100%; height:100%; display:block}
+  .tab[aria-selected="true"] .ic{color:#eaf2ff}
   .spacer{flex:1}
 
   /* ---- Content -------------------------------------------------- */
@@ -316,12 +317,12 @@
 
   <!-- Toolbar / tabs -->
   <div class="toolbar" role="tablist">
-    <button class="tab" role="tab" data-tab="threads" aria-selected="true"><span class="dot"></span>Threads</button>
-    <button class="tab" role="tab" data-tab="cleanup"><span class="dot"></span>Cleanup</button>
-    <button class="tab" role="tab" data-tab="progress"><span class="dot"></span>In&nbsp;Progress</button>
-    <button class="tab" role="tab" data-tab="schedule"><span class="dot"></span>Schedule</button>
+    <button class="tab" role="tab" data-tab="threads" aria-selected="true"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>Threads</button>
+    <button class="tab" role="tab" data-tab="cleanup"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><line x1="20" y1="4" x2="11.5" y2="12.5"/><line x1="9.5" y1="10.5" x2="13.5" y2="14.5"/><path d="M8 13 L4 20 L11 20 L14 15 Z"/></svg></span>Cleanup</button>
+    <button class="tab" role="tab" data-tab="progress"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3a9 9 0 1 0 9 9"/></svg></span>In&nbsp;Progress</button>
+    <button class="tab" role="tab" data-tab="schedule"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="17" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="16" y1="2" x2="16" y2="6"/></svg></span>Schedule</button>
     <span class="spacer"></span>
-    <button class="tab" role="tab" data-tab="settings"><span class="dot"></span>Settings</button>
+    <button class="tab" role="tab" data-tab="settings"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span>Settings</button>
   </div>
 
   <!-- Content -->
@@ -715,30 +716,33 @@
     const { invoke } = window.__TAURI__.core;
     const t0 = Date.now();
     const sleep = ms => new Promise(r=>setTimeout(r, ms));
-    // hold the splash until at least `ms` have elapsed since it appeared
     async function holdUntil(ms){ const el = Date.now() - t0; if (el < ms) await sleep(ms - el); }
+    console.log("[splash] initSplash started");
 
     $("#splashBar").style.display = "";        // loading animation while we work
     $("#splashNote").textContent = "Checking session…";
     try {
       const st = await invoke('check_login');
+      console.log("[splash] check_login resolved at", Date.now()-t0, "ms; logged_in:", st.logged_in);
       if (st.logged_in) {
-        await holdUntil(1300);                 // let "Checking session…" register
+        await holdUntil(1600);                 // let "Checking session…" register
         $("#splashNote").textContent = "Loading your conversations…";
         $("#sb_acct").textContent = st.username ? ("@" + st.username) : "Logged in";
         await loadThreads();
-        await holdUntil(2600);                 // comfortable minimum on-screen time
+        await holdUntil(3200);                 // comfortable minimum on-screen time
+        console.log("[splash] revealing app after", Date.now()-t0, "ms");
         hideSplash();
         checkSchedules();
       } else {
-        await holdUntil(1300);                 // don't flash the button in instantly
+        await holdUntil(1600);
         $("#splashBar").style.display = "none";
         $("#splashNote").textContent = "";
         $("#splashLogin").style.display = "";
+        console.log("[splash] not logged in — showing login button at", Date.now()-t0, "ms");
       }
     } catch (e) {
-      console.error("check_login failed:", e);
-      await holdUntil(1300);
+      console.error("[splash] check_login failed:", e);
+      await holdUntil(1600);
       $("#splashBar").style.display = "none";
       $("#splashNote").textContent = "";
       $("#splashLogin").style.display = "";
